@@ -444,11 +444,10 @@ relu_loop:
 
 #DENSE LAYER(FINTECH IMPLEMENTED)----------------------------------------------------------------------------------------------------------------------------#
 
-
 dense_layer:
     # Load base addresses
     la a0, output_max        # Input vector base
-    la a1, dense_weights     # Weights base
+    la a1, dense_weights     # Weights base (1152x10 column-major)
     la a2, dense_bias        # Bias base
     la a3, dense_output      # Output base
 
@@ -456,10 +455,10 @@ dense_layer:
 
 dense_outer_loop:
     li t1, 0                 # Input index j = 0
-    fmv.s.x f0, x0           # f0 = 0.0, accumulator for dot product
+    fmv.s.x f0, x0           # f0 = 0.0 (accumulator)
 
-    mv s0, a0                # s0 = input base (output_max)
-    mv s1, a1                # s1 = current weight row start
+    mv s0, a0                # s0 = input base
+    mv s1, a1                # s1 = weight base
     li t2, 1152              # input size
 
 dense_inner_loop:
@@ -467,14 +466,18 @@ dense_inner_loop:
 
     # Load input[j] into ft1
     slli t3, t1, 2           # offset = j * 4
-    add t4, s0, t3           # address = input_base + offset
-    flw ft1, 0(t4)           # ft1 = input[j]
+    add t4, s0, t3
+    flw ft1, 0(t4)
 
-    # Load weight[i * 1152 + j] into ft2
-    add t5, s1, t3           # address = weight_row_base + offset
-    flw ft2, 0(t5)           # ft2 = weight[i][j]
+    # Load weight[j][i] = weight[j * 10 + i] into ft2
+    li t6, 10                # number of output neurons
+    mul t5, t1, t6           # offset = j * 10
+    add t5, t5, t0           # offset += i
+    slli t5, t5, 2           # byte offset
+    add t6, s1, t5           # final address
+    flw ft2, 0(t6)
 
-    # Multiply and accumulate: f0 += ft1 * ft2
+    # Multiply and accumulate
     fmul.s ft3, ft1, ft2
     fadd.s f0, f0, ft3
 
@@ -482,35 +485,91 @@ dense_inner_loop:
     j dense_inner_loop
 
 dense_inner_done:
-    # Load bias[i] into ft4
+    # Add bias[i]
     slli t3, t0, 2
     add t4, a2, t3
     flw ft4, 0(t4)
-
-    # Add bias: f0 += ft4
     fadd.s f0, f0, ft4
 
-    # Store result in dense_output[i]
+    # Store result
     add t5, a3, t3
     fsw f0, 0(t5)
 
-    # Prepare for next output neuron
+    # Next output neuron
     addi t0, t0, 1
     li t6, 10
     beq t0, t6, dense_done
-
-    # Move weight pointer to next row: a1 += 1152 * 4 = 4608
-    li t2, 4608
-    add a1, a1, t2
     j dense_outer_loop
 
 dense_done:
-    # la a0, dense_output
-    # li a1, 10
-    # call printToLogVectorized
-    # j _finish
-    # ret
     call softmax_layer
+
+# dense_layer:
+#     # Load base addresses
+#     la a0, output_max        # Input vector base
+#     la a1, dense_weights     # Weights base
+#     la a2, dense_bias        # Bias base
+#     la a3, dense_output      # Output base
+
+#     li t0, 0                 # Output index i = 0
+
+# dense_outer_loop:
+#     li t1, 0                 # Input index j = 0
+#     fmv.s.x f0, x0           # f0 = 0.0, accumulator for dot product
+
+#     mv s0, a0                # s0 = input base (output_max)
+#     mv s1, a1                # s1 = current weight row start
+#     li t2, 1152              # input size
+
+# dense_inner_loop:
+#     beq t1, t2, dense_inner_done
+
+#     # Load input[j] into ft1
+#     slli t3, t1, 2           # offset = j * 4
+#     add t4, s0, t3           # address = input_base + offset
+#     flw ft1, 0(t4)           # ft1 = input[j]
+
+#     # Load weight[i * 1152 + j] into ft2
+#     add t5, s1, t3           # address = weight_row_base + offset
+#     flw ft2, 0(t5)           # ft2 = weight[i][j]
+
+#     # Multiply and accumulate: f0 += ft1 * ft2
+#     fmul.s ft3, ft1, ft2
+#     fadd.s f0, f0, ft3
+
+#     addi t1, t1, 1
+#     j dense_inner_loop
+
+# dense_inner_done:
+#     # Load bias[i] into ft4
+#     slli t3, t0, 2
+#     add t4, a2, t3
+#     flw ft4, 0(t4)
+
+#     # Add bias: f0 += ft4
+#     fadd.s f0, f0, ft4
+
+#     # Store result in dense_output[i]
+#     add t5, a3, t3
+#     fsw f0, 0(t5)
+
+#     # Prepare for next output neuron
+#     addi t0, t0, 1
+#     li t6, 10
+#     beq t0, t6, dense_done
+
+#     # Move weight pointer to next row: a1 += 1152 * 4 = 4608
+#     li t2, 4608
+#     add a1, a1, t2
+#     j dense_outer_loop
+
+# dense_done:
+#     # la a0, dense_output
+#     # li a1, 10
+#     # call printToLogVectorized
+#     # j _finish
+#     # ret
+#     call softmax_layer
 
 
 #####BEGINNING OF SOFTMAX WITH NORMALIZATION AND EXP(FINAL)##########################################################
