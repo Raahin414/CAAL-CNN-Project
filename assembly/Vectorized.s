@@ -293,7 +293,8 @@ maxpool_2x2:
     mv t0, a0
     la t1, output_max
     li a2, 0             # this will keep incrementing by 4 to store at next position in the output_max_matrix
-    li s1, 96             # Number of blocks to process -> Set it to 96 because we have to go through eight matrices vertically
+    
+    li s1, 96
     li s2, 0             # block index i (outer loop)
 
 
