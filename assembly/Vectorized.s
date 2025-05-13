@@ -269,6 +269,8 @@ conv_exit:
     # li a1, 24           # Since 24x24 output
     # call printToLogVectorized
     # j _finish
+
+
 # # =============================================================================
 # # Linking Conv Layer with ReLU
 # # Done by SafeGOAT
@@ -283,7 +285,7 @@ addi sp, sp, 16     # Rebalance stack
 # call printToLogVectorized
 # j _finish
 # # ReLU done
-# # ===========
+# # =============================================================================
 
 call maxpool_2x2
 
@@ -291,9 +293,8 @@ maxpool_2x2:
     mv t0, a0
     la t1, output_max
     li a2, 0             # this will keep incrementing by 4 to store at next position in the output_max_matrix
-    li s1, 12             # Number of blocks to process
+    li s1, 96             # Number of blocks to process -> Set it to 96 because we have to go through eight matrices vertically
     li s2, 0             # block index i (outer loop)
-
 
 
     li t4, 16            # row stride in bytes (4 floats * 4 bytes) (stride = 2)
@@ -306,7 +307,7 @@ max_pool_outer_loop:
     addi s4, zero, 192
     mul s5, s4, s2
     addi s2, s2, 1
-    li t2, 12            # number of patches to process (12 here)
+    li t2, 12            # number of patches to process (12 here) --> We are moving horizontally
     li t3, 0             # patch index j (inner loop)
     j patch_loop
 
@@ -348,8 +349,6 @@ patch_loop:
     addi t3, t3, 1       # i++ (increment the inner loop)
     j patch_loop
 
-# "done" needs to be commented/erased and another label must be added that links the max pool layer to the next layer. Also remove ecall when integrating.
-# SafeGOAT believes done should not be removed and will continue to function as the current next label after commenting out ecall
 done:
     call dense_layer
     # mv a0, t1
@@ -451,57 +450,75 @@ dense_layer:
     la a2, dense_bias        # Bias base
     la a3, dense_output      # Output base
 
-    li t0, 0                 # Output index i = 0
+    li t0, 0  # Output index i = 0
+    li s9, 4
+    li s10, 0
+    li s11, 40
 
-dense_outer_loop:
     li t1, 0                 # Input index j = 0
-    fmv.s.x f0, x0           # f0 = 0.0 (accumulator)
+    li t2, 10                # Ten columns corresponding to 10 outputs (each columns has 2 dense weights)
+
+    
 
     mv s0, a0                # s0 = input base
     mv s1, a1                # s1 = weight base
-    li t2, 1152              # input size
+
+
+dense_outer_loop: 
+   bge t1, t2, dense_done        # All the columns have been processed
+
+   fmv.s.x f0, x0           # f0 = 0.0 (accumulator)
+
+    li t3, 0
+    li t4, 1152             # Changed to 1152
+    
+    mul s10, t1, s9         # Move to the next column 
+
+    
+    addi t1, t1, 1          # Change column number (Remember we are dealing with 10 columns)
+    j dense_inner_loop
+    
+   
 
 dense_inner_loop:
-    beq t1, t2, dense_inner_done
+    bge t3, t4, dense_inner_done
 
-    # Load input[j] into ft1
-    slli t3, t1, 2           # offset = j * 4
-    add t4, s0, t3
-    flw ft1, 0(t4)
+    # Load appropriate dense weight into ft1
+    mul t5, t3, s11           # offset = j + 36
+    add t5, t5, s10           # Move horizontally
+    add s7, s1, t5
+    flw ft1, 0(s7)
 
-    # Load weight[j][i] = weight[j * 10 + i] into ft2
-    li t6, 10                # number of output neurons
-    mul t5, t1, t6           # offset = j * 10
-    add t5, t5, t0           # offset += i
-    slli t5, t5, 2           # byte offset
-    add t6, s1, t5           # final address
-    flw ft2, 0(t6)
-
+    # Load the appropriate input float
+    slli t6, t3, 2           #increment the offset by 4
+    add  s4, s0, t6
+    flw ft2, 0(s4)
+    
+    
     # Multiply and accumulate
     fmul.s ft3, ft1, ft2
     fadd.s f0, f0, ft3
 
-    addi t1, t1, 1
+    addi t3, t3, 1
     j dense_inner_loop
 
 dense_inner_done:
     # Add bias[i]
-    slli t3, t0, 2
-    add t4, a2, t3
-    flw ft4, 0(t4)
+    slli s5, t0, 2
+    add s6, a2, s5
+    flw ft4, 0(s6)
     fadd.s f0, f0, ft4
 
     # Store result
     add t5, a3, t3
     fsw f0, 0(t5)
 
-    # Next output neuron
+    # Next bias value
     addi t0, t0, 1
-    li t6, 10
-    beq t0, t6, dense_done
     j dense_outer_loop
 
 dense_done:
+    # Call the softmax layer
     call softmax_layer
 
 # dense_layer:
