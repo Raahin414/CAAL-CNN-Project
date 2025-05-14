@@ -448,53 +448,39 @@ dense_layer:
     # Load base addresses
     la a0, output_max        # Input vector base
     la a1, dense_weights     # Weights base (1152x10 column-major)
-    la a2, dense_bias        # Bias base
+    la a2, dense_bias         # Bias base
     la a3, dense_output      # Output base
 
-    li t0, 0  # Output index i = 0
-    li s9, 4
-    li s10, 0
-    li s11, 40
-
-    li t1, 0                 # Input index j = 0
-    li t2, 10                # Ten columns corresponding to 10 outputs (each columns has 2 dense weights)
-
-    
-
-    mv s0, a0                # s0 = input base
-    mv s1, a1                # s1 = weight base
-
+    li t0, 0                 # Output index i = 0
+    li t1, 10                # Number of outputs (columns)
 
 dense_outer_loop: 
-   bge t1, t2, dense_done        # All the columns have been processed
+    bge t0, t1, dense_done   # All outputs processed
 
-   fmv.s.x f0, x0           # f0 = 0.0 (accumulator)
+    fmv.s.x f0, x0           # f0 = 0.0 (accumulator)
+    li t3, 0                 # Input index j = 0
+    li t4, 1152              # Number of inputs (rows)
 
-    li t3, 0
-    li t4, 1152             # Changed to 1152
-    
-    mul s10, t1, s9         # Move to the next column 
-
-    
-    addi t1, t1, 1          # Change column number (Remember we are dealing with 10 columns)
-    j dense_inner_loop
-    
-   
+    # Calculate weight offset for this output (i)
+    # Each column has 1152 weights, each weight is 4 bytes
+    # Offset = i * 1152 * 4
+    li t6, 1152
+    mul t5, t0, t6           # i * 1152
+    slli t5, t5, 2           # *4 (bytes per float)
+    add s1, a1, t5           # Pointer to start of this column's weights
 
 dense_inner_loop:
     bge t3, t4, dense_inner_done
 
-    # Load appropriate dense weight into ft1
-    mul t5, t3, s11           # offset = j + 36
-    add t5, t5, s10           # Move horizontally
-    add s7, s1, t5
-    flw ft1, 0(s7)
+    # Load weight[i][j] (column-major order)
+    slli t6, t3, 2           # j * 4
+    add t6, s1, t6           # address of weight[i][j]
+    flw ft1, 0(t6)
 
-    # Load the appropriate input float
-    slli t6, t3, 2           #increment the offset by 4
-    add  s4, s0, t6
-    flw ft2, 0(s4)
-    
+    # Load input[j]
+    slli t6, t3, 2           # j * 4
+    add t6, a0, t6           # address of input[j]
+    flw ft2, 0(t6)
     
     # Multiply and accumulate
     fmul.s ft3, ft1, ft2
@@ -505,21 +491,21 @@ dense_inner_loop:
 
 dense_inner_done:
     # Add bias[i]
-    slli s5, t0, 2
-    add s6, a2, s5
-    flw ft4, 0(s6)
+    slli t6, t0, 2           # i * 4
+    add t6, a2, t6           # address of bias[i]
+    flw ft4, 0(t6)
     fadd.s f0, f0, ft4
 
-    # Store result
-    add t5, a3, t3
-    fsw f0, 0(t5)
+    # Store result[i]
+    slli t6, t0, 2           # i * 4
+    add t6, a3, t6           # address of output[i]
+    fsw f0, 0(t6)
 
-    # Next bias value
+    # Next output
     addi t0, t0, 1
     j dense_outer_loop
 
 dense_done:
-    # Call the softmax layer
     call softmax_layer
 
 # dense_layer:
