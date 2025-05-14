@@ -442,67 +442,62 @@ relu_loop:
 
 
 
-#DENSE LAYER(FINTECH IMPLEMENTED)----------------------------------------------------------------------------------------------------------------------------#
+#DENSE LAYER----------------------------------------------------------------------------------------------------------------------------#
 
 dense_layer:
     # Load base addresses
-    la a0, output_max        # Input vector base
-    la a1, dense_weights     # Weights base (1152x10 column-major)
-    la a2, dense_bias         # Bias base
-    la a3, dense_output      # Output base
+    la a0, output_max        # Input vector (3 elements)
+    la a1, dense_weights     # Weights (3x10, ROW-MAJOR)
+    la a2, dense_bias        # Bias (10 elements)
+    la a3, dense_output      # Output (10 elements)
 
     li t0, 0                 # Output index i = 0
     li t1, 10                # Number of outputs (columns)
 
 dense_outer_loop: 
-    bge t0, t1, dense_done   # All outputs processed
+    bge t0, t1, dense_done   # Exit if all outputs processed
 
-    fmv.s.x f0, x0           # f0 = 0.0 (accumulator)
+    fmv.s.x f0, x0           # Initialize accumulator = 0.0
     li t3, 0                 # Input index j = 0
-    li t4, 1152              # Number of inputs (rows)
-
-    # Calculate weight offset for this output (i)
-    # Each column has 1152 weights, each weight is 4 bytes
-    # Offset = i * 1152 * 4
-    li t6, 1152
-    mul t5, t0, t6           # i * 1152
-    slli t5, t5, 2           # *4 (bytes per float)
-    add s1, a1, t5           # Pointer to start of this column's weights
+    li t4, 3                 # Number of inputs (rows) = 3
 
 dense_inner_loop:
-    bge t3, t4, dense_inner_done
+    bge t3, t4, dense_inner_done  # Exit after 3 inputs
 
-    # Load weight[i][j] (column-major order)
-    slli t6, t3, 2           # j * 4
-    add t6, s1, t6           # address of weight[i][j]
-    flw ft1, 0(t6)
+    # Calculate weight offset: weights[j][i] (ROW-MAJOR)
+    # Offset = (j * 10 + i) * 4
+    li t6, 10                # 10 columns per row
+    mul t5, t3, t6           # j * 10 (start of row j)
+    add t5, t5, t0           # + i (column index)
+    slli t5, t5, 2           # Convert to byte offset (*4)
+    add t6, a1, t5           # t6 = &weights[j][i]
+    flw ft1, 0(t6)           # ft1 = weights[j][i]
 
     # Load input[j]
     slli t6, t3, 2           # j * 4
-    add t6, a0, t6           # address of input[j]
-    flw ft2, 0(t6)
-    
-    # Multiply and accumulate
-    fmul.s ft3, ft1, ft2
-    fadd.s f0, f0, ft3
+    add t6, a0, t6           # t6 = &input[j]
+    flw ft2, 0(t6)           # ft2 = input[j]
 
-    addi t3, t3, 1
+    # Multiply and accumulate
+    fmul.s ft3, ft1, ft2     # ft3 = weights[j][i] * input[j]
+    fadd.s f0, f0, ft3       # accumulator += ft3
+
+    addi t3, t3, 1           # j++
     j dense_inner_loop
 
 dense_inner_done:
     # Add bias[i]
     slli t6, t0, 2           # i * 4
-    add t6, a2, t6           # address of bias[i]
-    flw ft4, 0(t6)
-    fadd.s f0, f0, ft4
+    add t6, a2, t6           # t6 = &bias[i]
+    flw ft4, 0(t6)           # ft4 = bias[i]
+    fadd.s f0, f0, ft4       # accumulator += bias[i]
 
     # Store result[i]
     slli t6, t0, 2           # i * 4
-    add t6, a3, t6           # address of output[i]
-    fsw f0, 0(t6)
+    add t6, a3, t6           # t6 = &output[i]
+    fsw f0, 0(t6)            # output[i] = accumulator
 
-    # Next output
-    addi t0, t0, 1
+    addi t0, t0, 1           # i++
     j dense_outer_loop
 
 dense_done:
