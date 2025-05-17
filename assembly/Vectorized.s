@@ -16,91 +16,82 @@ _start:
 # .globl main
 
 main:
-    # Save return address
-    addi sp, sp, -4
-    sw ra, 0(sp)
 
     # Load addresses
     la a1, input_matrix      # Input matrix (same for all calls)
     la a2, conv_output       # Output matrix (will append results)
-    
+   
     # Load filter and bias base addresses
     la a0, conv_filters           # Filter weights
     la a4, filter_bias       # Bias values
-    
+   
     # Constants
     li s0, 8                 # Number of filters
     li s1, 0                 # Filter counter
-    
+         
+    j filter_loop
+   
 filter_loop:
-    bge s1, s0, end_loop     # Process all 8 filters
-    
+    bge s1, s0, exit     # Process all 8 filters
+   
     # Calculate current filter and bias addresses
     li t0, 100               # Size of one filter (25 elements * 4 bytes)
     mul t1, s1, t0           # Filter offset
     add a0, a0, t1           # Current filter address
-    
+   
     slli t1, s1, 2           # Bias offset (4 bytes per bias)
     add a4, a4, t1           # Current bias address
-    
+   
     # Call convolution function
-    jal conv2d
-    
+    j conv2d
+   
+ next_filter:
+    #Reset the addresses
+    la a0, conv_filters      # Filter weights
+    la a4, filter_bias       # Bias values
+
     # Update output pointer (24x24 elements per filter)
     li t0, 2304              # 24*24*4 bytes per output
     add a2, a2, t0
-    
+   
     # Next filter
     addi s1, s1, 1
     j filter_loop
 
-end_loop:
-    # Restore return address
-    lw ra, 0(sp)
-    addi sp, sp, 4
-    ret
 
 # Convolution function (optimized version from previous answer)
 conv2d:
-    # Save registers
-    addi sp, sp, -32
-    sw s0, 0(sp)
-    sw s1, 4(sp)
-    sw s2, 8(sp)
-    sw s3, 12(sp)
-    sw s4, 16(sp)
-    sw s5, 20(sp)
-    sw s6, 24(sp)
-    sw s7, 28(sp)
 
     # Load bias value
     flw f18, 0(a4)
-    
+   
     # Constants
     li t0, 24        # output dimension (28-5+1)
     li t1, 112       # input row stride (28*4)
     li t2, 20        # filter row size (5*4)
     li t3, 96        # output row stride (24*4)
-    
+   
     # Initialize vertical position counter
     li s9, 0
-    
+    j vertical_loop
+   
 vertical_loop:
     bge s9, t0, conv_exit
-    
+   
     # Calculate input row pointer
     mul t4, s9, t1
     add t4, a1, t4   # input row pointer
-    
+   
     # Initialize horizontal position counter
     li s7, 0
-    
+    j horizontal_loop
+   
 horizontal_loop:
     bge s7, t0, next_vertical
-    
+   
     # Initialize accumulator with bias
     fmv.s f17, f18
-    
+   
     # ===== Row 0 =====
     # Load filter row 0
     flw f1, 0(a0)    # filter[0][0]
@@ -108,14 +99,14 @@ horizontal_loop:
     flw f3, 8(a0)    # filter[0][2]
     flw f4, 12(a0)   # filter[0][3]
     flw f5, 16(a0)   # filter[0][4]
-    
+   
     # Load input row 0
     flw f6, 0(t4)    # input[0][0]
     flw f7, 4(t4)    # input[0][1]
     flw f8, 8(t4)    # input[0][2]
     flw f9, 12(t4)   # input[0][3]
     flw f10, 16(t4)  # input[0][4]
-    
+   
     # Compute dot product
     fmul.s f16, f1, f6
     fmadd.s f16, f2, f7, f16
@@ -123,26 +114,26 @@ horizontal_loop:
     fmadd.s f16, f4, f9, f16
     fmadd.s f16, f5, f10, f16
     fadd.s f17, f17, f16
-    
+   
     # ===== Row 1 =====
     # Calculate pointers for row 1
     add t5, t4, t1   # input row 1
     add t6, a0, t2   # filter row 1
-    
+   
     # Load filter row 1
     flw f1, 0(t6)
     flw f2, 4(t6)
     flw f3, 8(t6)
     flw f4, 12(t6)
     flw f5, 16(t6)
-    
+   
     # Load input row 1
     flw f6, 0(t5)
     flw f7, 4(t5)
     flw f8, 8(t5)
     flw f9, 12(t5)
     flw f10, 16(t5)
-    
+   
     # Compute dot product
     fmul.s f16, f1, f6
     fmadd.s f16, f2, f7, f16
@@ -150,26 +141,26 @@ horizontal_loop:
     fmadd.s f16, f4, f9, f16
     fmadd.s f16, f5, f10, f16
     fadd.s f17, f17, f16
-    
+   
     # ===== Row 2 =====
     # Calculate pointers for row 2
     add t5, t5, t1   # input row 2
     add t6, t6, t2   # filter row 2
-    
+   
     # Load filter row 2
     flw f1, 0(t6)
     flw f2, 4(t6)
     flw f3, 8(t6)
     flw f4, 12(t6)
     flw f5, 16(t6)
-    
+   
     # Load input row 2
     flw f6, 0(t5)
     flw f7, 4(t5)
     flw f8, 8(t5)
     flw f9, 12(t5)
     flw f10, 16(t5)
-    
+   
     # Compute dot product
     fmul.s f16, f1, f6
     fmadd.s f16, f2, f7, f16
@@ -177,26 +168,26 @@ horizontal_loop:
     fmadd.s f16, f4, f9, f16
     fmadd.s f16, f5, f10, f16
     fadd.s f17, f17, f16
-    
+   
     # ===== Row 3 =====
     # Calculate pointers for row 3
     add t5, t5, t1   # input row 3
     add t6, t6, t2   # filter row 3
-    
+   
     # Load filter row 3
     flw f1, 0(t6)
     flw f2, 4(t6)
     flw f3, 8(t6)
     flw f4, 12(t6)
     flw f5, 16(t6)
-    
+   
     # Load input row 3
     flw f6, 0(t5)
     flw f7, 4(t5)
     flw f8, 8(t5)
     flw f9, 12(t5)
     flw f10, 16(t5)
-    
+   
     # Compute dot product
     fmul.s f16, f1, f6
     fmadd.s f16, f2, f7, f16
@@ -204,26 +195,26 @@ horizontal_loop:
     fmadd.s f16, f4, f9, f16
     fmadd.s f16, f5, f10, f16
     fadd.s f17, f17, f16
-    
+   
     # ===== Row 4 =====
     # Calculate pointers for row 4
     add t5, t5, t1   # input row 4
     add t6, t6, t2   # filter row 4
-    
+   
     # Load filter row 4
     flw f1, 0(t6)
     flw f2, 4(t6)
     flw f3, 8(t6)
     flw f4, 12(t6)
     flw f5, 16(t6)
-    
+   
     # Load input row 4
     flw f6, 0(t5)
     flw f7, 4(t5)
     flw f8, 8(t5)
     flw f9, 12(t5)
     flw f10, 16(t5)
-    
+   
     # Compute dot product
     fmul.s f16, f1, f6
     fmadd.s f16, f2, f7, f16
@@ -231,17 +222,17 @@ horizontal_loop:
     fmadd.s f16, f4, f9, f16
     fmadd.s f16, f5, f10, f16
     fadd.s f17, f17, f16
-    
+   
     # ===== Store Result =====
     # Calculate output position
     mul t5, s9, t3   # vertical offset
     slli t6, s7, 2   # horizontal offset
     add t5, t5, t6   # total offset
     add t5, a2, t5   # output pointer
-    
+   
     # Store result
     fsw f17, 0(t5)
-    
+   
     # Next horizontal position
     addi s7, s7, 1
     addi t4, t4, 4   # move input pointer right
@@ -252,23 +243,13 @@ next_vertical:
     j vertical_loop
 
 conv_exit:
-    # Restore registers
-    lw s0, 0(sp)
-    lw s1, 4(sp)
-    lw s2, 8(sp)
-    lw s3, 12(sp)
-    lw s4, 16(sp)
-    lw s5, 20(sp)
-    lw s6, 24(sp)
-    lw s7, 28(sp)
-    addi sp, sp, 32
-    
-    #Since a2 was incremented after each filter, rewind by 2304 to point to the last output
-    li t0, 2304
-    sub a0, a2, t0      # Point back to last filter output
-    # li a1, 24           # Since 24x24 output
-    # call printToLogVectorized
-    # j _finish
+    j next_filter
+   
+exit:
+#la a0, conv_output
+#li a1, 4608
+#call LogToPrintVectorized
+#j _finish
 
 
 # # =============================================================================
@@ -281,7 +262,7 @@ li a1, 4608 # size of the output of the convolutional layer 24x24x8
 addi sp, sp, -16    # Pre-align for ReLU's stack usage 
 call relu_activation # Call ReLU subroutine
 addi sp, sp, 16     # Rebalance stack  
-# li a1, 24           # Since 24x24 output
+# li a1, 4608           # Since 24x24 output
 # call printToLogVectorized
 # j _finish
 # # ReLU done
@@ -291,7 +272,7 @@ call maxpool_2x2
 
 maxpool_2x2:
     mv t0, a0
-    la t1, output_max
+    la a0, output_max    #changed from t1 to a0
     li a2, 0             # this will keep incrementing by 4 to store at next position in the output_max_matrix
     
     li s1, 96
@@ -343,7 +324,7 @@ patch_loop:
 
     
     # Store the result in output_max[i]
-    add a4, t1, a2
+    add a4, a0, a2   #changed from t1 to a0
     fsw f1, 0(a4)
     addi a2, a2, 4
 
@@ -351,11 +332,11 @@ patch_loop:
     j patch_loop
 
 done:
-    call dense_layer
-    # mv a0, t1
-    # li a1, 12
-    # call printToLogVectorized
-    # j _finish
+  #la a0, output_max
+  #li a1, 1152
+  #call printToLogVectorized
+  #j _finish
+  call dense_layer
     
 
 
@@ -459,7 +440,7 @@ dense_outer_loop:
 
     fmv.s.x f0, x0           # Initialize accumulator = 0.0
     li t3, 0                 # Input index j = 0
-    li t4, 3                 # Number of inputs (rows) = 3
+    li t4, 1152                 # Number of inputs (rows) = 1152
 
 dense_inner_loop:
     bge t3, t4, dense_inner_done  # Exit after 3 inputs
@@ -501,6 +482,10 @@ dense_inner_done:
     j dense_outer_loop
 
 dense_done:
+    #mv a0, a3
+    #li a1, 10
+    #call printToLogVectorized
+    #j _finish
     call softmax_layer
 
 # dense_layer:
@@ -650,10 +635,10 @@ norm_loop:
     j norm_loop
 
 done_softmax:
-    la a0, p
-    li a1, 10
-    call printToLogVectorized
-    j _finish
+    #la a0, p
+    #li a1, 10
+    #call printToLogVectorized
+    #j _finish
     ret                         # Return to caller
 
 
@@ -703,6 +688,8 @@ _finish:
     .rept 100
         nop
     .endr
+
+    
 
 ## ALL DATA IS DEFINED HERE LIKE MATRIX, CONSTANTS ETC
 
