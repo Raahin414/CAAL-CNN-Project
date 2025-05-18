@@ -5,63 +5,50 @@
 ## START YOUR CODE HERE
 _start:
 
-
-    # === Normalize image ===
-##################################################################################
-#This part takes raw image pixels (0-255) and turns them into floating point. 
-#We do this because when training it will be easier for neural nets to work on normalized values. .bss
-###################################################################################
-
-# .text
-# .globl main
-
 main:
-
     # Load addresses
     la a1, input_matrix      # Input matrix (same for all calls)
     la a2, conv_output       # Output matrix (will append results)
    
     # Load filter and bias base addresses
-    la a0, conv_filters           # Filter weights
-    la a4, filter_bias       # Bias values
+    la a0, conv_filters     # Filter weights
+    la a4, filter_bias      # Bias values
    
     # Constants
-    li s0, 8                 # Number of filters
-    li s1, 0                 # Filter counter
+    li s0, 8                # Number of filters
+    li s1, 0                # Filter counter
          
     j filter_loop
    
 filter_loop:
-    bge s1, s0, exit     # Process all 8 filters
+    bge s1, s0, exit        # Process all 8 filters
    
     # Calculate current filter and bias addresses
-    li t0, 100               # Size of one filter (25 elements * 4 bytes)
-    mul t1, s1, t0           # Filter offset
-    add a0, a0, t1           # Current filter address
+    li t0, 100              # Size of one filter (25 elements * 4 bytes)
+    mul t1, s1, t0          # Filter offset
+    add a0, a0, t1          # Current filter address
    
-    slli t1, s1, 2           # Bias offset (4 bytes per bias)
-    add a4, a4, t1           # Current bias address
+    slli t1, s1, 2          # Bias offset (4 bytes per bias)
+    add a4, a4, t1          # Current bias address
    
     # Call convolution function
     j conv2d
    
- next_filter:
-    #Reset the addresses
-    la a0, conv_filters      # Filter weights
-    la a4, filter_bias       # Bias values
+next_filter:
+    # Reset the addresses
+    la a0, conv_filters     # Filter weights
+    la a4, filter_bias      # Bias values
 
     # Update output pointer (24x24 elements per filter)
-    li t0, 2304              # 24*24*4 bytes per output
+    li t0, 2304             # 24*24*4 bytes per output
     add a2, a2, t0
    
     # Next filter
     addi s1, s1, 1
     j filter_loop
 
-
-# Convolution function (optimized version from previous answer)
+# Vectorized convolution function with alternative reduction
 conv2d:
-
     # Load bias value
     flw f18, 0(a4)
    
@@ -93,149 +80,98 @@ horizontal_loop:
     fmv.s f17, f18
    
     # ===== Row 0 =====
-    # Load filter row 0
-    flw f1, 0(a0)    # filter[0][0]
-    flw f2, 4(a0)    # filter[0][1]
-    flw f3, 8(a0)    # filter[0][2]
-    flw f4, 12(a0)   # filter[0][3]
-    flw f5, 16(a0)   # filter[0][4]
+    # Vector load filter row 0
+    vsetivli x0, 5, e32, m1   # Set VL=5 for 32-bit elements
+    vle32.v v1, (a0)          # Load 5 filter elements
+    vle32.v v2, (t4)          # Load 5 input elements
    
-    # Load input row 0
-    flw f6, 0(t4)    # input[0][0]
-    flw f7, 4(t4)    # input[0][1]
-    flw f8, 8(t4)    # input[0][2]
-    flw f9, 12(t4)   # input[0][3]
-    flw f10, 16(t4)  # input[0][4]
-   
-    # Compute dot product
-    fmul.s f16, f1, f6
-    fmadd.s f16, f2, f7, f16
-    fmadd.s f16, f3, f8, f16
-    fmadd.s f16, f4, f9, f16
-    fmadd.s f16, f5, f10, f16
-    fadd.s f17, f17, f16
+    # Vector multiply and reduce
+    vfmul.vv v3, v1, v2       # Element-wise multiplication
+    # Reduction steps
+    vfslide1down.vf v4, v3, f0  # Shift elements down
+    vfadd.vv v3, v3, v4         # Add pairs
+    vfslide1down.vf v4, v3, f0  # Shift again
+    vfadd.vv v3, v3, v4         # Add remaining pairs
+    vfmv.f.s f16, v3           # Get final sum
+    fadd.s f17, f17, f16      # Add to accumulator
    
     # ===== Row 1 =====
     # Calculate pointers for row 1
-    add t5, t4, t1   # input row 1
-    add t6, a0, t2   # filter row 1
+    add t5, t4, t1           # input row 1
+    add t6, a0, t2           # filter row 1
    
-    # Load filter row 1
-    flw f1, 0(t6)
-    flw f2, 4(t6)
-    flw f3, 8(t6)
-    flw f4, 12(t6)
-    flw f5, 16(t6)
-   
-    # Load input row 1
-    flw f6, 0(t5)
-    flw f7, 4(t5)
-    flw f8, 8(t5)
-    flw f9, 12(t5)
-    flw f10, 16(t5)
-   
-    # Compute dot product
-    fmul.s f16, f1, f6
-    fmadd.s f16, f2, f7, f16
-    fmadd.s f16, f3, f8, f16
-    fmadd.s f16, f4, f9, f16
-    fmadd.s f16, f5, f10, f16
+    # Vector operations for row 1
+    vle32.v v1, (t6)
+    vle32.v v2, (t5)
+    vfmul.vv v3, v1, v2
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfmv.f.s f16, v3
     fadd.s f17, f17, f16
    
     # ===== Row 2 =====
     # Calculate pointers for row 2
-    add t5, t5, t1   # input row 2
-    add t6, t6, t2   # filter row 2
+    add t5, t5, t1           # input row 2
+    add t6, t6, t2           # filter row 2
    
-    # Load filter row 2
-    flw f1, 0(t6)
-    flw f2, 4(t6)
-    flw f3, 8(t6)
-    flw f4, 12(t6)
-    flw f5, 16(t6)
-   
-    # Load input row 2
-    flw f6, 0(t5)
-    flw f7, 4(t5)
-    flw f8, 8(t5)
-    flw f9, 12(t5)
-    flw f10, 16(t5)
-   
-    # Compute dot product
-    fmul.s f16, f1, f6
-    fmadd.s f16, f2, f7, f16
-    fmadd.s f16, f3, f8, f16
-    fmadd.s f16, f4, f9, f16
-    fmadd.s f16, f5, f10, f16
+    # Vector operations for row 2
+    vle32.v v1, (t6)
+    vle32.v v2, (t5)
+    vfmul.vv v3, v1, v2
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfmv.f.s f16, v3
     fadd.s f17, f17, f16
    
     # ===== Row 3 =====
     # Calculate pointers for row 3
-    add t5, t5, t1   # input row 3
-    add t6, t6, t2   # filter row 3
+    add t5, t5, t1           # input row 3
+    add t6, t6, t2           # filter row 3
    
-    # Load filter row 3
-    flw f1, 0(t6)
-    flw f2, 4(t6)
-    flw f3, 8(t6)
-    flw f4, 12(t6)
-    flw f5, 16(t6)
-   
-    # Load input row 3
-    flw f6, 0(t5)
-    flw f7, 4(t5)
-    flw f8, 8(t5)
-    flw f9, 12(t5)
-    flw f10, 16(t5)
-   
-    # Compute dot product
-    fmul.s f16, f1, f6
-    fmadd.s f16, f2, f7, f16
-    fmadd.s f16, f3, f8, f16
-    fmadd.s f16, f4, f9, f16
-    fmadd.s f16, f5, f10, f16
+    # Vector operations for row 3
+    vle32.v v1, (t6)
+    vle32.v v2, (t5)
+    vfmul.vv v3, v1, v2
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfmv.f.s f16, v3
     fadd.s f17, f17, f16
    
     # ===== Row 4 =====
     # Calculate pointers for row 4
-    add t5, t5, t1   # input row 4
-    add t6, t6, t2   # filter row 4
+    add t5, t5, t1           # input row 4
+    add t6, t6, t2           # filter row 4
    
-    # Load filter row 4
-    flw f1, 0(t6)
-    flw f2, 4(t6)
-    flw f3, 8(t6)
-    flw f4, 12(t6)
-    flw f5, 16(t6)
-   
-    # Load input row 4
-    flw f6, 0(t5)
-    flw f7, 4(t5)
-    flw f8, 8(t5)
-    flw f9, 12(t5)
-    flw f10, 16(t5)
-   
-    # Compute dot product
-    fmul.s f16, f1, f6
-    fmadd.s f16, f2, f7, f16
-    fmadd.s f16, f3, f8, f16
-    fmadd.s f16, f4, f9, f16
-    fmadd.s f16, f5, f10, f16
+    # Vector operations for row 4
+    vle32.v v1, (t6)
+    vle32.v v2, (t5)
+    vfmul.vv v3, v1, v2
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfslide1down.vf v4, v3, f0
+    vfadd.vv v3, v3, v4
+    vfmv.f.s f16, v3
     fadd.s f17, f17, f16
    
     # ===== Store Result =====
     # Calculate output position
-    mul t5, s9, t3   # vertical offset
-    slli t6, s7, 2   # horizontal offset
-    add t5, t5, t6   # total offset
-    add t5, a2, t5   # output pointer
+    mul t5, s9, t3           # vertical offset
+    slli t6, s7, 2           # horizontal offset
+    add t5, t5, t6           # total offset
+    add t5, a2, t5           # output pointer
    
     # Store result
     fsw f17, 0(t5)
    
     # Next horizontal position
     addi s7, s7, 1
-    addi t4, t4, 4   # move input pointer right
+    addi t4, t4, 4           # move input pointer right
     j horizontal_loop
 
 next_vertical:
@@ -244,6 +180,234 @@ next_vertical:
 
 conv_exit:
     j next_filter
+# main:
+
+#     # Load addresses
+#     la a1, input_matrix      # Input matrix (same for all calls)
+#     la a2, conv_output       # Output matrix (will append results)
+   
+#     # Load filter and bias base addresses
+#     la a0, conv_filters           # Filter weights
+#     la a4, filter_bias       # Bias values
+   
+#     # Constants
+#     li s0, 8                 # Number of filters
+#     li s1, 0                 # Filter counter
+         
+#     j filter_loop
+   
+# filter_loop:
+#     bge s1, s0, exit     # Process all 8 filters
+   
+#     # Calculate current filter and bias addresses
+#     li t0, 100               # Size of one filter (25 elements * 4 bytes)
+#     mul t1, s1, t0           # Filter offset
+#     add a0, a0, t1           # Current filter address
+   
+#     slli t1, s1, 2           # Bias offset (4 bytes per bias)
+#     add a4, a4, t1           # Current bias address
+   
+#     # Call convolution function
+#     j conv2d
+   
+#  next_filter:
+#     #Reset the addresses
+#     la a0, conv_filters      # Filter weights
+#     la a4, filter_bias       # Bias values
+
+#     # Update output pointer (24x24 elements per filter)
+#     li t0, 2304              # 24*24*4 bytes per output
+#     add a2, a2, t0
+   
+#     # Next filter
+#     addi s1, s1, 1
+#     j filter_loop
+
+
+# conv2d:
+
+#     # Load bias value
+#     flw f18, 0(a4)
+   
+#     # Constants
+#     li t0, 24        # output dimension (28-5+1)
+#     li t1, 112       # input row stride (28*4)
+#     li t2, 20        # filter row size (5*4)
+#     li t3, 96        # output row stride (24*4)
+   
+#     # Initialize vertical position counter
+#     li s9, 0
+#     j vertical_loop
+   
+# vertical_loop:
+#     bge s9, t0, conv_exit
+   
+#     # Calculate input row pointer
+#     mul t4, s9, t1
+#     add t4, a1, t4   # input row pointer
+   
+#     # Initialize horizontal position counter
+#     li s7, 0
+#     j horizontal_loop
+   
+# horizontal_loop:
+#     bge s7, t0, next_vertical
+   
+#     # Initialize accumulator with bias
+#     fmv.s f17, f18
+   
+#     # ===== Row 0 =====
+#     # Load filter row 0
+#     flw f1, 0(a0)    # filter[0][0]
+#     flw f2, 4(a0)    # filter[0][1]
+#     flw f3, 8(a0)    # filter[0][2]
+#     flw f4, 12(a0)   # filter[0][3]
+#     flw f5, 16(a0)   # filter[0][4]
+   
+#     # Load input row 0
+#     flw f6, 0(t4)    # input[0][0]
+#     flw f7, 4(t4)    # input[0][1]
+#     flw f8, 8(t4)    # input[0][2]
+#     flw f9, 12(t4)   # input[0][3]
+#     flw f10, 16(t4)  # input[0][4]
+   
+#     # Compute dot product
+#     fmul.s f16, f1, f6
+#     fmadd.s f16, f2, f7, f16
+#     fmadd.s f16, f3, f8, f16
+#     fmadd.s f16, f4, f9, f16
+#     fmadd.s f16, f5, f10, f16
+#     fadd.s f17, f17, f16
+   
+#     # ===== Row 1 =====
+#     # Calculate pointers for row 1
+#     add t5, t4, t1   # input row 1
+#     add t6, a0, t2   # filter row 1
+   
+#     # Load filter row 1
+#     flw f1, 0(t6)
+#     flw f2, 4(t6)
+#     flw f3, 8(t6)
+#     flw f4, 12(t6)
+#     flw f5, 16(t6)
+   
+#     # Load input row 1
+#     flw f6, 0(t5)
+#     flw f7, 4(t5)
+#     flw f8, 8(t5)
+#     flw f9, 12(t5)
+#     flw f10, 16(t5)
+   
+#     # Compute dot product
+#     fmul.s f16, f1, f6
+#     fmadd.s f16, f2, f7, f16
+#     fmadd.s f16, f3, f8, f16
+#     fmadd.s f16, f4, f9, f16
+#     fmadd.s f16, f5, f10, f16
+#     fadd.s f17, f17, f16
+   
+#     # ===== Row 2 =====
+#     # Calculate pointers for row 2
+#     add t5, t5, t1   # input row 2
+#     add t6, t6, t2   # filter row 2
+   
+#     # Load filter row 2
+#     flw f1, 0(t6)
+#     flw f2, 4(t6)
+#     flw f3, 8(t6)
+#     flw f4, 12(t6)
+#     flw f5, 16(t6)
+   
+#     # Load input row 2
+#     flw f6, 0(t5)
+#     flw f7, 4(t5)
+#     flw f8, 8(t5)
+#     flw f9, 12(t5)
+#     flw f10, 16(t5)
+   
+#     # Compute dot product
+#     fmul.s f16, f1, f6
+#     fmadd.s f16, f2, f7, f16
+#     fmadd.s f16, f3, f8, f16
+#     fmadd.s f16, f4, f9, f16
+#     fmadd.s f16, f5, f10, f16
+#     fadd.s f17, f17, f16
+   
+#     # ===== Row 3 =====
+#     # Calculate pointers for row 3
+#     add t5, t5, t1   # input row 3
+#     add t6, t6, t2   # filter row 3
+   
+#     # Load filter row 3
+#     flw f1, 0(t6)
+#     flw f2, 4(t6)
+#     flw f3, 8(t6)
+#     flw f4, 12(t6)
+#     flw f5, 16(t6)
+   
+#     # Load input row 3
+#     flw f6, 0(t5)
+#     flw f7, 4(t5)
+#     flw f8, 8(t5)
+#     flw f9, 12(t5)
+#     flw f10, 16(t5)
+   
+#     # Compute dot product
+#     fmul.s f16, f1, f6
+#     fmadd.s f16, f2, f7, f16
+#     fmadd.s f16, f3, f8, f16
+#     fmadd.s f16, f4, f9, f16
+#     fmadd.s f16, f5, f10, f16
+#     fadd.s f17, f17, f16
+   
+#     # ===== Row 4 =====
+#     # Calculate pointers for row 4
+#     add t5, t5, t1   # input row 4
+#     add t6, t6, t2   # filter row 4
+   
+#     # Load filter row 4
+#     flw f1, 0(t6)
+#     flw f2, 4(t6)
+#     flw f3, 8(t6)
+#     flw f4, 12(t6)
+#     flw f5, 16(t6)
+   
+#     # Load input row 4
+#     flw f6, 0(t5)
+#     flw f7, 4(t5)
+#     flw f8, 8(t5)
+#     flw f9, 12(t5)
+#     flw f10, 16(t5)
+   
+#     # Compute dot product
+#     fmul.s f16, f1, f6
+#     fmadd.s f16, f2, f7, f16
+#     fmadd.s f16, f3, f8, f16
+#     fmadd.s f16, f4, f9, f16
+#     fmadd.s f16, f5, f10, f16
+#     fadd.s f17, f17, f16
+   
+#     # ===== Store Result =====
+#     # Calculate output position
+#     mul t5, s9, t3   # vertical offset
+#     slli t6, s7, 2   # horizontal offset
+#     add t5, t5, t6   # total offset
+#     add t5, a2, t5   # output pointer
+   
+#     # Store result
+#     fsw f17, 0(t5)
+   
+#     # Next horizontal position
+#     addi s7, s7, 1
+#     addi t4, t4, 4   # move input pointer right
+#     j horizontal_loop
+
+# next_vertical:
+#     addi s9, s9, 1
+#     j vertical_loop
+
+# conv_exit:
+#     j next_filter
    
 exit:
 #la a0, conv_output
@@ -262,80 +426,169 @@ li a1, 4608 # size of the output of the convolutional layer 24x24x8
 addi sp, sp, -16    # Pre-align for ReLU's stack usage 
 call relu_activation # Call ReLU subroutine
 addi sp, sp, 16     # Rebalance stack  
+la a0, conv_output
+# call maxpool_2x2
 # li a1, 4608           # Since 24x24 output
 # call printToLogVectorized
 # j _finish
 # # ReLU done
 # # =============================================================================
 
-call maxpool_2x2
+
+# maxpool_2x2:
+#  mv t0, a0
+#  la a0, output_max #changed from t1 to a0
+#  li a2, 0 # this will keep incrementing by 4 to store at next position in the output_max_matrix
+#  li s1, 96
+#  li s2, 0 # block index i (outer loop)
+#  li t4, 16 # row stride in bytes (4 floats * 4 bytes) (stride = 2)
+#  li t5, 0 # temp offset for current patch
+# max_pool_outer_loop:
+#  bge s2, s1, done # done label has to be replaced with the label of the next layer/function in our cnn
+#  addi s4, zero, 192
+#  mul s5, s4, s2
+#  addi s2, s2, 1
+#  li t2, 12 # number of patches to process (12 here) --> We are moving horizontally
+#  li t3, 0 # patch index j (inner loop)
+#  j patch_loop
+# patch_loop:
+#  bge t3, t2, max_pool_outer_loop # exit if all patches are processed
+# # Calculate column offset: col = (i % 2) * 8
+# # For generality, though here it's just col = i * 8
+#  addi a1 , zero, 8
+#  mul t5, t3, a1 # column offset for each patch in bytes done
+# # Row 1, Col 1 → offset 0 + t5
+#  add t5, t5, s5 # from outer loop
+#  add t6, t0, t5
+#  flw f1, 0(t6)
+# # Row 1, Col 2 → offset 4 + t5
+#  flw f2, 4(t6)
+# # Row 2, Col 1 → offset 16 + t5
+#  flw f3, 96(t6)
+# # Row 2, Col 2 → offset 20 + t5
+#  flw f4, 100(t6)
+# # Compute max of the four
+#  fmax.s f1, f1, f2
+#  fmax.s f1, f1, f3
+#  fmax.s f1, f1, f4
+# # Store the result in output_max[i]
+#  add a4, a0, a2 #changed from t1 to a0
+#  fsw f1, 0(a4)
+#  addi a2, a2, 4
+#  addi t3, t3, 1 # i++ (increment the inner loop)
+#  j patch_loop
+# done:
+# call dense_layer
 
 maxpool_2x2:
-    mv t0, a0
-    la a0, output_max    #changed from t1 to a0
-    li a2, 0             # this will keep incrementing by 4 to store at next position in the output_max_matrix
+    # a0 = input matrix address
+    # Return value will be in output_max
     
-    li s1, 96
-    li s2, 0             # block index i (outer loop)
+    mv t0, a0                # Save input matrix address
+    la a0, output_max        # Output matrix address
+    li a2, 0                 # Initialize counter for output position (same as original)
+    
+    # Initialize counters and constants (matching original)
+    li s1, 96                # Number of blocks to process in outer loop
+    li s2, 0                 # Block index i (outer loop)
+    li t4, 96                # Offset for second row (using 96 based on original code)
 
+max_pool_outer_loop_vector:
+    bge s2, s1, done_vector  # Done when processed all blocks (same as original)
+    
+    # Calculate base address for current block (same logic as original)
+    addi s4, zero, 192       # Match original constant
+    mul s5, s4, s2           # s5 = 192 * s2 (block offset)
+    addi s2, s2, 1           # Increment block counter (matches original exactly)
+    
+    # Initialize inner loop counter (same as original)
+    li t2, 12                # Number of patches to process horizontally
+    li t3, 0                 # Patch index j (inner loop)
+    
+    # Process patches in groups of 4 when possible
+    li a3, 4                 # We'll try to process 4 patches at once
+    
+    j patch_loop_vector
 
-    li t4, 16            # row stride in bytes (4 floats * 4 bytes) (stride = 2)
-    li t5, 0             # temp offset for current patch 
- 
-
-
-max_pool_outer_loop:
-    bge s2, s1, done    # done label has to be replaced with the label of the next layer/function in our cnn
-    addi s4, zero, 192
-    mul s5, s4, s2
-    addi s2, s2, 1
-    li t2, 12            # number of patches to process (12 here) --> We are moving horizontally
-    li t3, 0             # patch index j (inner loop)
-    j patch_loop
-
-
-
-patch_loop:
-    bge t3, t2, max_pool_outer_loop     # exit if all patches are processed
-
-    # Calculate column offset: col = (i % 2) * 8
-    # For generality, though here it's just col = i * 8
-    addi a1 , zero, 8
-    mul t5, t3, a1        # column offset for each patch in bytes done
-
-    # Row 1, Col 1 → offset 0 + t5
-    add t5, t5, s5  # from outer loop
-    add t6, t0, t5
-    flw f1, 0(t6)
-
-    # Row 1, Col 2 → offset 4 + t5
-    flw f2, 4(t6)
-
-    # Row 2, Col 1 → offset 16 + t5
-    flw f3, 96(t6)
-
-    # Row 2, Col 2 → offset 20 + t5
-    flw f4, 100(t6)
-
-    # Compute max of the four
+patch_loop_vector:
+    bge t3, t2, max_pool_outer_loop_vector  # Exit inner loop if done (same as original)
+    
+    # Calculate how many patches we can process this iteration
+    sub a5, t2, t3           # a5 = remaining patches
+    blt a5, a3, process_remaining  # If < 4 patches left, handle individually
+    li a5, 4                 # Process 4 patches at a time
+    j vectorized_processing
+    
+process_remaining:
+    # For last few patches, process one at a time (same as original code)
+    # Calculate offset for current patch
+    addi a1, zero, 8
+    mul t5, t3, a1           # Column offset for patch
+    add t5, t5, s5           # Add block offset
+    add t5, t0, t5           # Final address = input + offset
+    
+    # Load the four corners (exactly as in original)
+    flw f1, 0(t5)            # Row 1, Col 1
+    flw f2, 4(t5)            # Row 1, Col 2
+    flw f3, 96(t5)           # Row 2, Col 1 (using t4=96)
+    flw f4, 100(t5)          # Row 2, Col 2
+    
+    # Compute max (exactly as in original)
     fmax.s f1, f1, f2
     fmax.s f1, f1, f3
     fmax.s f1, f1, f4
-
     
-    # Store the result in output_max[i]
-    add a4, a0, a2   #changed from t1 to a0
+    # Store result (exactly as in original)
+    add a4, a0, a2
     fsw f1, 0(a4)
-    addi a2, a2, 4
+    addi a2, a2, 4           # Increment output pointer
+    addi t3, t3, 1           # Increment patch counter
+    j patch_loop_vector
+    
+vectorized_processing:
+    # Setup vector registers for 4 patches at once
+    vsetvli t1, a5, e32, m1, ta, ma
+    
+    # Process 4 patches at once
+    li t1, 0                 # Counter for current patch in group
+    
+vector_patch_loop:
+    bge t1, a5, vector_done  # Check if done with this group of patches
+    
+    # Calculate offset for current patch
+    addi a1, zero, 8
+    add t5, t3, t1           # Current patch index
+    mul t5, t5, a1           # Column offset
+    add t5, t5, s5           # Add block offset
+    add t5, t0, t5           # Final address
+    
+    # Load the four corners (as in original)
+    flw f1, 0(t5)            # Row 1, Col 1
+    flw f2, 4(t5)            # Row 1, Col 2
+    flw f3, 96(t5)           # Row 2, Col 1
+    flw f4, 100(t5)          # Row 2, Col 2
+    
+    # Compute max (as in original)
+    fmax.s f1, f1, f2
+    fmax.s f1, f1, f3
+    fmax.s f1, f1, f4
+    
+    # Store result
+    add a4, a0, a2
+    fsw f1, 0(a4)
+    addi a2, a2, 4           # Increment output pointer
+    addi t1, t1, 1           # Move to next patch in this group
+    j vector_patch_loop
+    
+vector_done:
+    add t3, t3, a5           # Update patch counter by number processed
+    j patch_loop_vector
 
-    addi t3, t3, 1       # i++ (increment the inner loop)
-    j patch_loop
-
-done:
-  #la a0, output_max
-  #li a1, 1152
-  #call printToLogVectorized
-  #j _finish
+done_vector:
+#   la a0, output_max
+#   li a1, 1152
+#   call printToLogVectorized
+#   j _finish
   call dense_layer
     
 
@@ -390,41 +643,274 @@ done:
 # # =============================================================================
 relu_activation:
     # PROLOGUE
-    addi sp, sp, -16        # Allocate stack space
-    sw ra, 12(sp)           # Save return address
-    fsw fs0, 8(sp)          # Save preserved FP register
-    sw s0, 4(sp)            # Save preserved integer register
-    
-    # Load 0.0 using stack space
-    addi sp, sp, -4         # Temporary space for 0.0
-    sw zero, 0(sp)
-    flw ft0, 0(sp)          # ft0 = 0.0
-    addi sp, sp, 4          # Deallocate temp space
-    
-    # Initialize counter
-    li t0, 0                # t0 = counter
-    mv s0, a0               # s0 = preserved matrix pointer
-    fmv.s fs0, ft0          # fs0 = preserved 0.0
+    addi sp, sp, -16     # Allocate stack space
+    sw ra, 12(sp)        # Save return address
+    sw s0, 8(sp)         # Save preserved integer register
+    sw s1, 4(sp)         # Save another preserved register for vector work
 
-relu_loop:
-    flw ft1, 0(s0)          # Load current element
-    fmax.s ft1, ft1, fs0    # ReLU: max(x, 0)
-    fsw ft1, 0(s0)          # Store result back
-    addi s0, s0, 4          # Next element
-    addi t0, t0, 1          # Increment counter
-    blt t0, a1, relu_loop   # Loop if not done
-
+    # Initialize vector configuration
+    mv s0, a0            # s0 = preserved matrix pointer
+    mv s1, a1            # s1 = total element count
+    
+    # Load 0.0 to a scalar register for comparison
+    fcvt.s.w ft0, zero   # ft0 = 0.0 (no need for stack manipulation)
+    
+    # Configure vector unit
+    csrr t0, vlenb       # Get vector register length in bytes
+    srli t1, t0, 2       # t1 = number of 32-bit elements per vector register (vlenb/4)
+    
+    # Initialize vector settings
+    vsetvli t2, s1, e32, m4, ta, ma   # Setup vector configuration for 32-bit elements
+                                      # m4 uses 4 vector registers grouped together
+    
+    # Main processing loop
+    relu_vector_loop:
+        vle32.v v0, (s0)          # Load multiple elements into vector register v0
+        vfmax.vf v0, v0, ft0      # Vector max: max(v0, 0.0) for all elements
+        vse32.v v0, (s0)          # Store results back
+        
+        sub s1, s1, t2            # Decrement remaining element count
+        slli t3, t2, 2            # Convert count to bytes (t3 = t2 * 4)
+        add s0, s0, t3            # Advance pointer
+        
+        # Reconfigure vector length for remaining elements
+        vsetvli t2, s1, e32, m4, ta, ma
+        bnez t2, relu_vector_loop # Continue if more elements to process
+    
     # EPILOGUE
-    lw s0, 4(sp)            # Restore saved register
-    flw fs0, 8(sp)          # Restore FP register
-    lw ra, 12(sp)           # Restore return address
-    addi sp, sp, 16         # Deallocate stack space
-    ret                     # Return to caller
+    lw s1, 4(sp)         # Restore saved register
+    lw s0, 8(sp)         # Restore saved register
+    lw ra, 12(sp)        # Restore return address
+    addi sp, sp, 16      # Deallocate stack space
+    ret                  # Return to caller
+# relu_activation:
+#     # PROLOGUE
+#     addi sp, sp, -16        # Allocate stack space
+#     sw ra, 12(sp)           # Save return address
+#     fsw fs0, 8(sp)          # Save preserved FP register
+#     sw s0, 4(sp)            # Save preserved integer register
+    
+#     # Load 0.0 using stack space
+#     addi sp, sp, -4         # Temporary space for 0.0
+#     sw zero, 0(sp)
+#     flw ft0, 0(sp)          # ft0 = 0.0
+#     addi sp, sp, 4          # Deallocate temp space
+    
+#     # Initialize counter
+#     li t0, 0                # t0 = counter
+#     mv s0, a0               # s0 = preserved matrix pointer
+#     fmv.s fs0, ft0          # fs0 = preserved 0.0
+
+# relu_loop:
+#     flw ft1, 0(s0)          # Load current element
+#     fmax.s ft1, ft1, fs0    # ReLU: max(x, 0)
+#     fsw ft1, 0(s0)          # Store result back
+#     addi s0, s0, 4          # Next element
+#     addi t0, t0, 1          # Increment counter
+#     blt t0, a1, relu_loop   # Loop if not done
+
+#     # EPILOGUE
+#     lw s0, 4(sp)            # Restore saved register
+#     flw fs0, 8(sp)          # Restore FP register
+#     lw ra, 12(sp)           # Restore return address
+#     addi sp, sp, 16         # Deallocate stack space
+#     ret                     # Return to caller
 
 
 
 #DENSE LAYER----------------------------------------------------------------------------------------------------------------------------#
+# Vectorized Dense Layer (1152 inputs → 10 outputs)
+# Assumptions:
+# - Weights are stored in row-major order (1152x10)
+# - Input vector is 1152 elements (12x12x8)
+# - Output vector is 10 elements
+# - Uses single-precision floating-point (f32)
+# SHERWANI CODE
+# dense_layer:
+#     # Prologue
+#     addi sp, sp, -32
+#     sw s0, 0(sp)
+#     sw s1, 4(sp)
+#     sw s2, 8(sp)
+#     sw s3, 12(sp)
+#     sw ra, 16(sp)
+    
+#     # Load base addresses
+#     la a0, dense_weights         # a0 = &W[0][0]
+#     la a1, output_max     # a1 = &A[0]
+#     la a2, dense_bias            # a2 = &b[0]
+#     la a3, dense_output        # a3 = &Z[0]
+    
+#     # Initialize loop counters
+#     li s0, 0                     # s0 = i (output neuron index)
+#     li s3, 10                    # s3 = number of output neurons (10)
+    
+# outer_loop:
+#     bge s0, s3, end_outer        # if i >= 10, exit outer loop
+    
+#     # Initialize dot product accumulator
+#     fcvt.s.w ft0, zero           # ft0 = 0.0 (float)
+    
+#     # Inner loop setup
+#     li s1, 0                     # s1 = j (input feature index)
+#     li s2, 1152                  # s2 = number of input features (1152)
+    
+#     # Calculate address of current row in W
+#     li t1, 1152                  # t1 = 1152 (elements per row)
+#     mul t1, s0, t1               # t1 = i * 1152
+#     slli t1, t1, 2               # t1 = byte offset for row i
+#     add t1, a0, t1               # t1 = &W[i][0]
+    
+#     # Vector setup - process 8 elements at a time
+#     li t0, 8                     # We'll process 8 elements per iteration
+#     vsetvli zero, t0, e32, m1, ta, ma  # Set vector length to 8, using 32-bit elements
+    
+#     # Initialize vector accumulator to zeros
+#     vmv.v.i v0, 0                # v0 = [0,0,0,0,0,0,0,0]
 
+# dvector_loop:
+#     # Check if we processed all elements
+#     bge s1, s2, end_inner        # if j >= 1152, exit inner loop
+    
+#     # Load 8 elements from W[i][j:j+7]
+#     vle32.v v1, (t1)             # v1 = weights[i][j:j+7]
+    
+#     # Load 8 elements from A_flat[j:j+7]
+#     slli t3, s1, 2               # t3 = j * 4 (byte offset)
+#     add t3, a1, t3               # t3 = &A_flat[j]
+#     vle32.v v2, (t3)             # v2 = input[j:j+7]
+    
+#     # Multiply and accumulate vectors
+#     vfmacc.vv v0, v1, v2         # v0 += v1 * v2 (element-wise multiply-accumulate)
+    
+#     # Update counter and pointers
+#     addi s1, s1, 8               # j += 8
+#     addi t1, t1, 32              # Move weight pointer forward by 8*4 bytes
+    
+#     j dvector_loop
+    
+# end_inner:
+#     # Reduce vector to scalar sum for final result
+#     # Initialize reduction register with 0
+#     vfmv.s.f v3, ft0             # v3[0] = 0.0
+    
+#     # Sum reduction: v0 -> scalar in v3[0]
+#     vfredsum.vs v3, v0, v3       # v3[0] = sum(v0) + v3[0]
+    
+#     # Move result to scalar register
+#     vfmv.f.s ft0, v3             # ft0 = v3[0]
+    
+#     # Add bias term b[i]
+#     slli t5, s0, 2               # t5 = i * 4 (byte offset)
+#     add t5, a2, t5               # t5 = &b[i]
+#     flw ft3, 0(t5)               # ft3 = b[i]
+    
+#     fadd.s ft0, ft0, ft3         # ft0 += b[i]
+    
+#     # Store result in Z[i]
+#     slli t5, s0, 2               # t5 = i * 4 (byte offset)
+#     add t5, a3, t5               # t5 = &Z[i]
+#     fsw ft0, 0(t5)               # store Z[i]
+    
+#     # Next output neuron
+#     addi s0, s0, 1               # i++
+#     j outer_loop
+    
+# end_outer:
+#     # Epilogue - corrected to match prologue
+#     lw s0, 0(sp)
+#     lw s1, 4(sp)
+#     lw s2, 8(sp)
+#     lw s3, 12(sp)
+#     lw ra, 16(sp)
+#     addi sp, sp, 32
+    
+#     ret
+#     call softmax_layer
+# CLAUDE CODE(NOT WORKING INFINITE LOOP)
+
+# dense_layer:
+#     # Load base addresses
+#     la a0, output_max       # Input vector (12x12x8 = 1152 elements)
+#     la a1, dense_weights    # Weights (1152x10, ROW-MAJOR)
+#     la a2, dense_bias       # Bias (10 elements)
+#     la a3, dense_output     # Output (10 elements)
+#     li t0, 0                # Output index i = 0
+#     li t1, 10               # Number of outputs (columns)
+
+# dense_outer_loop:
+#     bge t0, t1, dense_done  # Exit if all outputs processed
+#     fmv.s.x f0, x0          # Initialize accumulator = 0.0
+    
+#     # Get maximum vector length
+#     csrr t6, vlenb          # Vector register length in bytes
+#     srli t6, t6, 2          # Convert to number of 32-bit elements
+    
+#     # Set up inner loop counters
+#     li t3, 0                # Input index j = 0
+#     li t4, 1152             # Number of inputs (rows) = 1152
+    
+# dense_inner_loop:
+#     bge t3, t4, dense_inner_done  # Exit if processed all inputs
+    
+#     # Calculate vector length for this iteration
+#     sub t5, t4, t3          # Remaining elements
+#     vsetvli t5, t5, e32, m1, ta, ma  # Use min(remaining, max_vlen)
+    
+#     # Load vector chunk of input elements
+#     slli a4, t3, 2          # j * 4 bytes
+#     add a4, a0, a4          # Address of input[j]
+#     vle32.v v0, (a4)        # Load input vector
+    
+#     # Calculate starting weight address
+#     li a5, 10               # 10 columns per row
+#     mul a5, t3, a5          # j * 10
+#     add a5, a5, t0          # (j * 10) + i
+#     slli a5, a5, 2          # ((j * 10) + i) * 4 bytes
+#     add a5, a1, a5          # Address of weights[j][i]
+    
+#     # Load weights with stride (each weight is 10*4 bytes apart)
+#     li a6, 40               # Stride = 10 * 4 bytes
+#     vlse32.v v1, (a5), a6   # Load weights with stride
+    
+#     # Multiply inputs and weights
+#     vfmul.vv v2, v0, v1     # v2 = input * weights
+    
+#     # Sum the products using vector reduction
+#     vfredsum.vs v3, v2, v0  # Sum into first element
+    
+#     # Add to accumulator
+#     vfmv.f.s ft1, v3        # Extract scalar from vector
+#     fadd.s f0, f0, ft1      # Add to accumulator
+    
+#     # Update index and continue
+#     add t3, t3, t5          # j += vector_length
+#     j dense_inner_loop
+    
+# dense_inner_done:
+#     # Add bias[i]
+#     slli t6, t0, 2          # i * 4
+#     add t6, a2, t6          # t6 = &bias[i]
+#     flw ft4, 0(t6)          # ft4 = bias[i]
+#     fadd.s f0, f0, ft4      # accumulator += bias[i]
+    
+#     # Store result[i]
+#     slli t6, t0, 2          # i * 4
+#     add t6, a3, t6          # t6 = &output[i]
+#     fsw f0, 0(t6)           # output[i] = accumulator
+    
+#     addi t0, t0, 1          # i++
+#     j dense_outer_loop
+    
+# dense_done:
+# #     # mv a0, a3
+# #     # li a1, 10
+# #     # call printToLogVectorized
+# #     # j _finish
+#     call softmax_layer
+
+
+#HAMZA CODE
 dense_layer:
     # Load base addresses
     la a0, output_max        # Input vector (3 elements)
@@ -482,10 +968,10 @@ dense_inner_done:
     j dense_outer_loop
 
 dense_done:
-    #mv a0, a3
-    #li a1, 10
-    #call printToLogVectorized
-    #j _finish
+    # mv a0, a3
+    # li a1, 10
+    # call printToLogVectorized
+    # j _finish
     call softmax_layer
 
 # dense_layer:
@@ -557,89 +1043,315 @@ dense_done:
 
 
 #####BEGINNING OF SOFTMAX WITH NORMALIZATION AND EXP(FINAL)##########################################################
+
+# Softmax function - Fixed Version with x < -10 optimization
+# Input: a0 = pointer to input array
+#        a1 = pointer to output array
+#        a2 = number of elements
+# Output: None (results stored in output array)
 softmax_layer:
-    la a3, dense_output
+    la a0, dense_output
     la a1, p
-    # Find max(Z[i]) for stability
-    li t0, 0                    # i = 0
-    flw f0, 0(a3)               # f0 = max = Z[0]
+    li a2, 10           
+    
+    # Call softmax
+    jal ra, softmax
+    
+    # Load all results
+    la a1, p
+    flw fa0, 0(a1)
+    flw fa1, 4(a1)
+    flw fa2, 8(a1)
+    flw fa3, 12(a1)
+    flw fa4, 16(a1)
+    flw fa5, 20(a1)
+    flw fa6, 24(a1)
+    flw fa7, 28(a1)
+    flw fs2, 32(a1)
+    flw fs3, 36(a1)
+    nop
+    
+    j _end4
+exp_approx:
+    # Save registers
+    addi sp, sp, -32
+    sw ra, 0(sp)
+    fsw fs0, 4(sp)
+    fsw fs1, 8(sp)
+    fsw fs2, 12(sp)
+    sw t0, 16(sp)
+    sw t1, 20(sp)
+    
+    # Initialize values
+    fmv.s fs0, fa0       # fs0 = x (input)
+    li t0, 1
+    fcvt.s.w fs1, t0     # fs1 = 1.0 (result)
+    fcvt.s.w fs2, t0     # fs2 = 1.0 (term)
+    li t1, 100           # Number of terms in Taylor series
+    li t0, 1             # Start counter at 1 (i=1)
+    
+taylor_loop:
+    # Calculate next term: term = term * x / i
+    fmul.s fs2, fs2, fs0    # term = term * x
+    fcvt.s.w ft0, t0        # Convert counter to float
+    fdiv.s fs2, fs2, ft0    # term = term / i
+    
+    # Add term to result
+    fadd.s fs1, fs1, fs2    # result += term
+    
+    # Increment counter and check if done
+    addi t0, t0, 1
+    ble t0, t1, taylor_loop
+    
+    # Return result
+    fmv.s fa0, fs1
+    
+    # Restore registers
+    lw ra, 0(sp)
+    flw fs0, 4(sp)
+    flw fs1, 8(sp)
+    flw fs2, 12(sp)
+    lw t0, 16(sp)
+    lw t1, 20(sp)
+    addi sp, sp, 32
+    
+    ret
 
+# Softmax function - Fixed Version with x < -10 optimization
+# Input: a0 = pointer to input array
+#        a1 = pointer to output array
+#        a2 = number of elements
+# Output: None (results stored in output array)
+# Calculates approximate e^x using Taylor series expansion
+# Input: fa0 = x (power)
+# Output: fa0 = e^x
+softmax:
+    # Save registers
+    addi sp, sp, -64
+    sw ra, 0(sp)
+    sw s0, 4(sp)
+    sw s1, 8(sp)
+    sw s2, 12(sp)
+    fsw fs0, 16(sp)
+    fsw fs1, 20(sp)
+    fsw fs2, 24(sp)
+    fsw fs3, 28(sp)
+    fsw fs4, 32(sp)
+    fsw fs5, 36(sp)
+    sw t0, 40(sp)
+    sw t1, 44(sp)
+    sw t2, 48(sp)
+    
+    # Initialize
+    mv s0, a0               # s0 = input array
+    mv s1, a1               # s1 = output array
+    mv s2, a2             # s2 = number of elements
+    
+    # Find maximum value for numerical stability
+    li t0, 0                # t0 = current index
+    flw fs0, 0(s0)          # fs0 = max value (initialize with first element)
+    addi t0, t0, 1
+    
 max_loop:
-    li t1, 10
-    bge t0, t1, compute_exp_sum
-
-    slli t2, t0, 2              # t2 = i * 4
-    add t3, a3, t2              # t3 = address of Z[i]
-    flw f1, 0(t3)               # f1 = Z[i]
-    fmax.s f0, f0, f1           # f0 = max(max, Z[i])
-
-    addi t0, t0, 1              # i++
+    bge t0, s2, max_done
+    
+    slli t1, t0, 2          # t1 = t0 * 4
+    add t1, s0, t1
+    flw ft0, 0(t1)
+    
+    flt.s t2, fs0, ft0
+    beqz t2, max_continue
+    fmv.s fs0, ft0
+    
+max_continue:
+    addi t0, t0, 1
     j max_loop
-
-# ---------------------------------
-# Step 2: Compute exp(Z[i] - max) ≈ 1 + x + 0.5x² and store in p[i]
-# Also accumulate sum in f2
-# ---------------------------------
-compute_exp_sum:
-    li t0, 0                    # i = 0
-    fmv.s.x f2, zero            # f2 = sum = 0.0
-
-exp_loop:
-    li t1, 10
-    bge t0, t1, normalize_loop  # If i >= 10, go to normalization
-
-    slli t2, t0, 2              # t2 = i * 4
-    add t3, a3, t2              # t3 = address of Z[i]
-    flw f1, 0(t3)               # f1 = Z[i]
-    fsub.s f3, f1, f0           # f3 = x = Z[i] - max
-
-    # Approximate exp(x): f4 = 1 + x + 0.5 * x²
-    li t4, 0x3f800000           # 1.0 (float)
-    fmv.s.x f4, t4              # f4 = 1.0
-    fadd.s f4, f4, f3           # f4 = 1 + x
-
-    fmul.s f5, f3, f3           # f5 = x²
-    li t5, 0x3f000000           # 0.5 (float)
-    fmv.s.x f6, t5              # f6 = 0.5
-    fmul.s f5, f5, f6           # f5 = 0.5 * x²
-
-    fadd.s f4, f4, f5           # f4 = 1 + x + 0.5x²
-
-    # Store exp_approx in p[i]
-    add t3, a1, t2              # address of p[i]
-    fsw f4, 0(t3)               # store p[i]
-
+    
+max_done:
+    # Initialize sum to zero
+    li t3, 0
+    fcvt.s.w fs1, t3        # fs1 = 0.0 (sum of exponentials)
+    
+    # Load threshold value
+    la t4, neg_threshold
+    flw fs5, 0(t4)          # fs5 = -10.0 threshold
+    
+    # First pass: calculate exponentials and sum
+    li t0, 0                # t0 = current index
+    
+exp_sum_loop:
+    bge t0, s2, exp_done
+    
+    slli t1, t0, 2          # t1 = t0 * 4
+    add t1, s0, t1
+    flw ft0, 0(t1)          # ft0 = input[t0]
+    
+    # Subtract max for numerical stability
+    fsub.s fa0, ft0, fs0    # fa0 = input[t0] - max
+    
+    # Check if (input[t0] - max) < -10
+    flt.s t2, fa0, fs5      # t2 = 1 if (input[t0]-max) < -10
+    beqz t2, calculate_exp  # If not less than -10, calculate exp
+    
+    # If less than -10, set result to 0 and skip calculation exp_approx
+    fcvt.s.w fa0, t3        # fa0 = 0.0
+    j store_exp_result
+    
+calculate_exp:
+    # Save important registers before function call
+    sw t0, 52(sp)
+    sw t1, 56(sp)
+    fsw fs1, 60(sp)
+    
+    # Calculate e^(input[t0] - max)
+    jal ra, exp_approx
+    
+    # Restore important registers after function call
+    lw t0, 52(sp)
+    lw t1, 56(sp)
+    flw fs1, 60(sp)
+    
+store_exp_result:
+    # Store exp result in output array temporarily
+    slli t1, t0, 2
+    add t1, s1, t1
+    fsw fa0, 0(t1)
+    
     # Add to sum
-    fadd.s f2, f2, f4           # sum += exp_approx
-
-    addi t0, t0, 1              # i++
-    j exp_loop
-
-# -------------------------------
-# Step 3: Normalize: p[i] /= sum
-# -------------------------------
+    fadd.s fs1, fs1, fa0    # fs1 = sum + exp_result
+    
+    addi t0, t0, 1
+    j exp_sum_loop
+    
+exp_done:
+    # Second pass: normalize by sum
+    li t0, 0
+    
 normalize_loop:
-    li t0, 0                    # i = 0
+    bge t0, s2, normalize_done
+    
+    slli t1, t0, 2
+    add t1, s1, t1
+    flw ft0, 0(t1)
+    
+    # Divide by sum
+    fdiv.s ft0, ft0, fs1
+    
+    # Store final probability
+    fsw ft0, 0(t1)
+    
+    addi t0, t0, 1
+    j normalize_loop
+    
+normalize_done:
+    # Restore registers
+    lw ra, 0(sp)
+    lw s0, 4(sp)
+    lw s1, 8(sp)
+    lw s2, 12(sp)
+    flw fs0, 16(sp)
+    flw fs1, 20(sp)
+    flw fs2, 24(sp)
+    flw fs3, 28(sp)
+    flw fs4, 32(sp)
+    flw fs5, 36(sp)
+    lw t0, 40(sp)
+    lw t1, 44(sp)
+    lw t2, 48(sp)
+    addi sp, sp, 64
+    
+    ret
+    
+_end4:
+    la a0, p
+    li a1, 10
+    call printToLogVectorized
+    ecall
+    ret
 
-norm_loop:
-    li t1, 10
-    bge t0, t1, done_softmax    # If i >= 10, finish
+# softmax_layer:
+#     la a3, dense_output
+#     la a1, p
+#     # Find max(Z[i]) for stability
+#     li t0, 0                    # i = 0
+#     flw f0, 0(a3)               # f0 = max = Z[0]
 
-    slli t2, t0, 2              # t2 = i * 4
-    add t3, a1, t2              # t3 = address of p[i]
-    flw f1, 0(t3)               # f1 = p[i]
-    fdiv.s f1, f1, f2           # f1 = p[i] / sum
-    fsw f1, 0(t3)               # store back p[i]
+# max_loop:
+#     li t1, 10
+#     bge t0, t1, compute_exp_sum
 
-    addi t0, t0, 1              # i++
-    j norm_loop
+#     slli t2, t0, 2              # t2 = i * 4
+#     add t3, a3, t2              # t3 = address of Z[i]
+#     flw f1, 0(t3)               # f1 = Z[i]
+#     fmax.s f0, f0, f1           # f0 = max(max, Z[i])
 
-done_softmax:
-    #la a0, p
-    #li a1, 10
-    #call printToLogVectorized
-    #j _finish
-    ret                         # Return to caller
+#     addi t0, t0, 1              # i++
+#     j max_loop
+
+# # ---------------------------------
+# # Step 2: Compute exp(Z[i] - max) ≈ 1 + x + 0.5x² and store in p[i]
+# # Also accumulate sum in f2
+# # ---------------------------------
+# compute_exp_sum:
+#     li t0, 0                    # i = 0
+#     fmv.s.x f2, zero            # f2 = sum = 0.0
+
+# exp_loop:
+#     li t1, 10
+#     bge t0, t1, normalize_loop  # If i >= 10, go to normalization
+
+#     slli t2, t0, 2              # t2 = i * 4
+#     add t3, a3, t2              # t3 = address of Z[i]
+#     flw f1, 0(t3)               # f1 = Z[i]
+#     fsub.s f3, f1, f0           # f3 = x = Z[i] - max
+
+#     # Approximate exp(x): f4 = 1 + x + 0.5 * x²
+#     li t4, 0x3f800000           # 1.0 (float)
+#     fmv.s.x f4, t4              # f4 = 1.0
+#     fadd.s f4, f4, f3           # f4 = 1 + x
+
+#     fmul.s f5, f3, f3           # f5 = x²
+#     li t5, 0x3f000000           # 0.5 (float)
+#     fmv.s.x f6, t5              # f6 = 0.5
+#     fmul.s f5, f5, f6           # f5 = 0.5 * x²
+
+#     fadd.s f4, f4, f5           # f4 = 1 + x + 0.5x²
+
+#     # Store exp_approx in p[i]
+#     add t3, a1, t2              # address of p[i]
+#     fsw f4, 0(t3)               # store p[i]
+
+#     # Add to sum
+#     fadd.s f2, f2, f4           # sum += exp_approx
+
+#     addi t0, t0, 1              # i++
+#     j exp_loop
+
+# # -------------------------------
+# # Step 3: Normalize: p[i] /= sum
+# # -------------------------------
+# normalize_loop:
+#     li t0, 0                    # i = 0
+
+# norm_loop:
+#     li t1, 10
+#     bge t0, t1, done_softmax    # If i >= 10, finish
+
+#     slli t2, t0, 2              # t2 = i * 4
+#     add t3, a1, t2              # t3 = address of p[i]
+#     flw f1, 0(t3)               # f1 = p[i]
+#     fdiv.s f1, f1, f2           # f1 = p[i] / sum
+#     fsw f1, 0(t3)               # store back p[i]
+
+#     addi t0, t0, 1              # i++
+#     j norm_loop
+
+# done_softmax:
+#     la a0, p
+#     li a1, 10
+#     call printToLogVectorized
+#     j _finish
+#     ret                         # Return to caller
 
 
 
@@ -719,9 +1431,14 @@ output_max:
 
 p:
     .space 40  #float
+# stable_x:     .space 40               # x' = x - max(x)
+# results:      .space 40               # e^(x') results
+# softmax:      .space 40               # final softmax values
+
+
 
 dense_output:
-    .space  40  # 10 float values x 4 bytes filter
+    .space  40  # 10 float values x 4 bytes filter dense_outputs
 
 conv_output: 
      .space 8*24*24*4 # 8 channels, height and width 24x24 and word size 4 bytes
@@ -732,6 +1449,7 @@ conv_output:
 # Fully Connected Layer Weights and Biases, All data based on a similar tensorflow CNN with 97% accuracy trained on unaugmented but normalized MNIST data 
 .global weights
 #  1152 x 10 Dense weights
+
 
 ## DENSE_WEIGHTS BEGIN
 dense_weights:
@@ -1904,6 +2622,9 @@ Dense_weights_size: .word 11520
 .global biases_size
 Dense_biases_size: .word 10
 
+soft_test: .float -5.825374, -9.887916, -2.302836, 1.209780, -7.803916, -3.275545, -19.105032, 10.612792, -6.254661, -0.177880
+
+neg_threshold: .float -10.0      # Threshold for setting exp to 0
 
 # ## Convolutional Layer Filters
 .global conv_filters
@@ -1974,6 +2695,25 @@ conv_filters_size: .word 200
 .global conv_biases_size
 conv_biases_size: .word 8
 
+# .global constants
+# #Constants
+# constants:
+#     .float 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 362880.0, 3628800.0  # 1! to 10!
+#     .float 39916800.0, 479001600.0, 6227020800.0, 87178291200.0, 1307674368000.0    # 11! to 15!
+#     .float 20922789888000.0, 355687428096000.0, 6402373705728000.0                  # 16! to 18!
+#     .float 121645100408832000.0, 2432902008176640000.0                              # 19! to 20!
+#     .float 51090942171709440000.0, 1.1240007277776077e21, 2.585201673888498e22      # 21! to 23!
+#     .float 6.204484017332394e23, 1.5511210043330986e25, 4.0329146112660565e26       # 24! to 26!
+#     .float 1.0888869450418352e28, 3.0488834461171384e29, 8.841761993739701e30       # 27! to 29!
+#     .float 2.6525285981219103e32, 8.222838654177922e33, 2.631308369336935e35        # 30! to 32!
+#     .float 8.683317618811886e36, 2.9523279903960412e38, 1.0333147966386144e40       # 33! to 35!
+#     .float 3.719933267899012e41, 1.3763753091226343e43, 5.23022617466601e44         # 36! to 38!
+#     .float 2.0397882081197442e46, 8.159152832478977e47, 3.3452526613163803e49       # 39! to 41!
+#     .float 1.4050061177528798e51, 6.041526306337383e52, 2.6582715747884485e54       # 42! to 44!
+#     .float 1.1962222086548019e56, 5.5026221598120885e57, 2.5862324151116818e59      # 45! to 47!
+#     .float 1.2413915592536073e61, 6.082818640342675e62, 3.0414093201713376e64       # 48! to 50!
+# .global constant_sizes
+# constant_sizes: .word 50
 ## INPUTS BEGIN conv_output
 .section .data
 .global input_image
@@ -1982,33 +2722,33 @@ input_matrix:
 # Image is Scaled between 0 and 255
 
 ## INPUT_MATRIX BEGIN
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[0]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[1]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[2]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[3]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[4]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.011765, 0.070588, 0.070588, 0.070588, 0.494118, 0.533333, 0.686275, 0.101961, 0.650980, 1.000000, 0.968627, 0.498039, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[5]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.117647, 0.141176, 0.368627, 0.603922, 0.666667, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.882353, 0.674510, 0.992157, 0.949020, 0.764706, 0.250980, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[6]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.192157, 0.933333, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.984314, 0.364706, 0.321569, 0.321569, 0.219608, 0.152941, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[7]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.070588, 0.858824, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.776471, 0.713725, 0.968627, 0.945098, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[8]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.313725, 0.611765, 0.419608, 0.992157, 0.992157, 0.803922, 0.043137, 0.000000, 0.168627, 0.603922, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[9]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.054902, 0.003922, 0.603922, 0.992157, 0.352941, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[10]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.545098, 0.992157, 0.745098, 0.007843, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[11]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.043137, 0.745098, 0.992157, 0.274510, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[12]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.137255, 0.945098, 0.882353, 0.627451, 0.423529, 0.003922, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[13]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.317647, 0.941176, 0.992157, 0.992157, 0.466667, 0.098039, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[14]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.176471, 0.729412, 0.992157, 0.992157, 0.588235, 0.105882, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[15]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.062745, 0.364706, 0.988235, 0.992157, 0.733333, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[16]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.976471, 0.992157, 0.976471, 0.250980, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[17]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.180392, 0.509804, 0.717647, 0.992157, 0.992157, 0.811765, 0.007843, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[18]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.152941, 0.580392, 0.898039, 0.992157, 0.992157, 0.992157, 0.980392, 0.713725, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[19]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.094118, 0.447059, 0.866667, 0.992157, 0.992157, 0.992157, 0.992157, 0.788235, 0.305882, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[20]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.090196, 0.258824, 0.835294, 0.992157, 0.992157, 0.992157, 0.992157, 0.776471, 0.317647, 0.007843, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[21]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.070588, 0.670588, 0.858824, 0.992157, 0.992157, 0.992157, 0.992157, 0.764706, 0.313725, 0.035294, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[22]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.215686, 0.674510, 0.886275, 0.992157, 0.992157, 0.992157, 0.992157, 0.956863, 0.521569, 0.043137, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[23]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.533333, 0.992157, 0.992157, 0.992157, 0.831373, 0.529412, 0.517647, 0.062745, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[24]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[25]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[26]
-  .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000 # input_matrix[27]
-## INPUT_MATRIX END
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.047059, 0.160784, 0.572549, 0.572549, 0.188235, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.047059, 0.505882, 0.992157, 0.992157, 0.992157, 0.980392, 0.639216, 0.070588, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.521569, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.898039, 0.274510, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.396078, 0.992157, 0.988235, 0.568627, 0.400000, 0.419608, 0.929412, 0.992157, 0.968627, 0.501961, 0.039216, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.709804, 0.992157, 0.654902, 0.000000, 0.000000, 0.000000, 0.239216, 0.921569, 0.992157, 0.992157, 0.639216, 0.019608, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.992157, 0.168627, 0.000000, 0.000000, 0.000000, 0.000000, 0.227451, 0.756863, 0.992157, 0.992157, 0.643137, 0.015686, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.733333, 0.992157, 0.125490, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.215686, 0.925490, 0.992157, 0.992157, 0.337255, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.572549, 0.992157, 0.125490, 0.000000, 0.392157, 0.745098, 0.341176, 0.341176, 0.341176, 0.576471, 0.992157, 0.992157, 0.482353, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.368627, 0.992157, 0.305882, 0.156863, 0.972549, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.874510, 0.329412, 0.058824, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.054902, 0.360784, 0.047059, 0.137255, 0.941176, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.956863, 0.349020, 0.039216, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.294118, 0.631373, 0.701961, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.819608, 0.168627, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.011765, 0.062745, 0.062745, 0.152941, 0.149020, 0.062745, 0.062745, 0.568627, 0.952941, 0.992157, 0.992157, 0.725490, 0.188235, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.078431, 0.227451, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.227451, 0.819608, 0.992157, 0.992157, 0.717647, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.301961, 0.866667, 0.968627, 0.309804, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.050980, 0.858824, 0.992157, 0.941176, 0.282353, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.352941, 0.968627, 0.992157, 0.988235, 0.223529, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.207843, 0.984314, 0.992157, 0.749020, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.454902, 0.992157, 0.992157, 0.231373, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.388235, 0.988235, 0.992157, 0.568627, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.054902, 0.737255, 0.992157, 0.866667, 0.619608, 0.149020, 0.000000, 0.000000, 0.000000, 0.000000, 0.435294, 0.827451, 0.964706, 0.992157, 0.992157, 0.568627, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.047059, 0.866667, 0.964706, 0.992157, 0.984314, 0.976471, 0.976471, 0.976471, 0.976471, 0.992157, 0.992157, 0.992157, 0.992157, 0.784314, 0.074510, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.372549, 0.717647, 0.894118, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.764706, 0.486275, 0.090196, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.094118, 0.145098, 0.541176, 0.290196, 0.494118, 0.345098, 0.145098, 0.027451, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+# ## INPUT_MATRIX END
 
