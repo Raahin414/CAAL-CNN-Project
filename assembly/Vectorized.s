@@ -6,9 +6,6 @@
 # ==============================================================================
 
 _start:
-     la a0, input_mnist         # a0 = Base address of input image (28x28)
-    addi t0, x0, 784            # t0 = Total input pixels (unused here)
-
 main:
     # ----------------------------
     # Prologue - Save callee-saved registers
@@ -29,7 +26,7 @@ main:
     la a2, filter_bias          # a2 = biases [8]
     la a3, conv_output          # a3 = output [8][24][24]
 
-Conv_layer:
+Convolution:
     li t0, 0                    # t0 = filter_index (0–7)
 
 filter_loop:
@@ -250,6 +247,9 @@ patch_loop:
     j vector_chunk
 
 finish_pool:
+    #la a0, output_maxpool
+    # li a1, 1152
+    # call printToLogVectorized
     call flatten_max
     ret
     
@@ -380,6 +380,9 @@ process_columns:
     bltu t2, t4, process_rows      # loop if t2 < 12
 
     # Proceed to next layer
+    #la a0, output_maxpool_flattened
+    # li a1, 1152
+    # call printToLogVectorized
     call dense
     ret
 
@@ -481,6 +484,9 @@ layer_complete:
     addi sp, sp, 20
 
     # Next layer transition
+    # la a0, dense_output   # Load address of probability array
+    # li a1, 10               # Load array size
+    # call printToLogVectorized # Print results
     call softmax_taylor
     ret
 
