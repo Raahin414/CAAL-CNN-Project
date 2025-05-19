@@ -1,1109 +1,554 @@
-# define STDOUT 0xd0580000
-
 .section .text
 .global _start
-## START YOUR CODE HERE
+
+# ==============================================================================
+# Program Entry Point and Main Execution Flow
+# ==============================================================================
+
 _start:
+     la a0, input_mnist         # a0 = Base address of input image (28x28)
+    addi t0, x0, 784            # t0 = Total input pixels (unused here)
 
 main:
-    # Load addresses
-    la a1, input_matrix      # Input matrix (same for all calls)
-    la a2, conv_output       # Output matrix (will append results)
-   
-    # Load filter and bias base addresses
-    la a0, conv_filters     # Filter weights
-    la a4, filter_bias      # Bias values
-   
-    # Constants
-    li s0, 8                # Number of filters
-    li s1, 0                # Filter counter
-         
-    j filter_loop
-   
+    # ----------------------------
+    # Prologue - Save callee-saved registers
+    # ----------------------------
+    addi sp, sp, -32
+    sw   ra, 28(sp)
+    sw   s0, 24(sp)
+    sw   s1, 20(sp)
+    sw   s2, 16(sp)
+    sw   s3, 12(sp)
+    sw   s4, 8(sp)
+    sw   s5, 4(sp)
+    sw   s6, 0(sp)
+
+    # Load base addresses into argument registers
+    la a0, input_mnist         # a0 = input matrix (28x28)
+    la a1, conv_filters         # a1 = filters [8][5][5]
+    la a2, filter_bias          # a2 = biases [8]
+    la a3, conv_output          # a3 = output [8][24][24]
+
+Conv_layer:
+    li t0, 0                    # t0 = filter_index (0–7)
+
 filter_loop:
-    bge s1, s0, exit        # Process all 8 filters
-   
-    # Calculate current filter and bias addresses
-    li t0, 100              # Size of one filter (25 elements * 4 bytes)
-    mul t1, s1, t0          # Filter offset
-    add a0, a0, t1          # Current filter address
-   
-    slli t1, s1, 2          # Bias offset (4 bytes per bias)
-    add a4, a4, t1          # Current bias address
-   
-    # Call convolution function
-    j conv2d
-   
-next_filter:
-    # Reset the addresses
-    la a0, conv_filters     # Filter weights
-    la a4, filter_bias      # Bias values
+    # ----------------------------
+    # Load bias for current filter
+    # ----------------------------
+    slli s10, t0, 2
+    add s10, a2, s10
+    flw ft3, 0(s10)             # ft3 = bias[filter_index]
 
-    # Update output pointer (24x24 elements per filter)
-    li t0, 2304             # 24*24*4 bytes per output
-    add a2, a2, t0
-   
-    # Next filter
-    addi s1, s1, 1
-    j filter_loop
+    li t1, 0                    # t1 = out_y (output row)
+    li s0, 28                   # s0 = input image width
+    li s1, 24                   # s1 = output feature map dimension
 
-# Vectorized convolution function with alternative reduction
-conv2d:
-    # Load bias value
-    flw f18, 0(a4)
-   
-    # Constants
-    li t0, 24        # output dimension (28-5+1)
-    li t1, 112       # input row stride (28*4)
-    li t2, 20        # filter row size (5*4)
-    li t3, 96        # output row stride (24*4)
-   
-    # Initialize vertical position counter
-    li s9, 0
-    j vertical_loop
-   
-vertical_loop:
-    bge s9, t0, conv_exit
-   
-    # Calculate input row pointer
-    mul t4, s9, t1
-    add t4, a1, t4   # input row pointer
-   
-    # Initialize horizontal position counter
-    li s7, 0
-    j horizontal_loop
-   
-horizontal_loop:
-    bge s7, t0, next_vertical
-   
+    # Configure vector unit: 8-element vectors, 32-bit floats
+    li t3, 8
+    vsetvli t3, t3, e32, m1
+
+out_row_loop:
+    li t2, 0                    # t2 = out_x (output col)
+
+out_col_loop:
+    # ----------------------------
     # Initialize accumulator with bias
-    fmv.s f17, f18
-   
-    # ===== Row 0 =====
-    # Vector load filter row 0
-    vsetivli x0, 5, e32, m1   # Set VL=5 for 32-bit elements
-    vle32.v v1, (a0)          # Load 5 filter elements
-    vle32.v v2, (t4)          # Load 5 input elements
-   
-    # Vector multiply and reduce
-    vfmul.vv v3, v1, v2       # Element-wise multiplication
-    # Reduction steps
-    vfslide1down.vf v4, v3, f0  # Shift elements down
-    vfadd.vv v3, v3, v4         # Add pairs
-    vfslide1down.vf v4, v3, f0  # Shift again
-    vfadd.vv v3, v3, v4         # Add remaining pairs
-    vfmv.f.s f16, v3           # Get final sum
-    fadd.s f17, f17, f16      # Add to accumulator
-   
-    # ===== Row 1 =====
-    # Calculate pointers for row 1
-    add t5, t4, t1           # input row 1
-    add t6, a0, t2           # filter row 1
-   
-    # Vector operations for row 1
-    vle32.v v1, (t6)
-    vle32.v v2, (t5)
-    vfmul.vv v3, v1, v2
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfmv.f.s f16, v3
-    fadd.s f17, f17, f16
-   
-    # ===== Row 2 =====
-    # Calculate pointers for row 2
-    add t5, t5, t1           # input row 2
-    add t6, t6, t2           # filter row 2
-   
-    # Vector operations for row 2
-    vle32.v v1, (t6)
-    vle32.v v2, (t5)
-    vfmul.vv v3, v1, v2
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfmv.f.s f16, v3
-    fadd.s f17, f17, f16
-   
-    # ===== Row 3 =====
-    # Calculate pointers for row 3
-    add t5, t5, t1           # input row 3
-    add t6, t6, t2           # filter row 3
-   
-    # Vector operations for row 3
-    vle32.v v1, (t6)
-    vle32.v v2, (t5)
-    vfmul.vv v3, v1, v2
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfmv.f.s f16, v3
-    fadd.s f17, f17, f16
-   
-    # ===== Row 4 =====
-    # Calculate pointers for row 4
-    add t5, t5, t1           # input row 4
-    add t6, t6, t2           # filter row 4
-   
-    # Vector operations for row 4
-    vle32.v v1, (t6)
-    vle32.v v2, (t5)
-    vfmul.vv v3, v1, v2
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfslide1down.vf v4, v3, f0
-    vfadd.vv v3, v3, v4
-    vfmv.f.s f16, v3
-    fadd.s f17, f17, f16
-   
-    # ===== Store Result =====
-    # Calculate output position
-    mul t5, s9, t3           # vertical offset
-    slli t6, s7, 2           # horizontal offset
-    add t5, t5, t6           # total offset
-    add t5, a2, t5           # output pointer
-   
-    # Store result
-    fsw f17, 0(t5)
-   
-    # Next horizontal position
-    addi s7, s7, 1
-    addi t4, t4, 4           # move input pointer right
-    j horizontal_loop
+    # ----------------------------
+    vfmv.v.f v4, ft3            # v4 = [bias, bias, ..., bias]
 
-next_vertical:
-    addi s9, s9, 1
-    j vertical_loop
+    li s10, 0                   # s10 = ky (filter row)
 
-conv_exit:
-    j next_filter
-# main:
+filter_row_loop:
+    li s11, 0                   # s11 = kx (filter col)
 
-#     # Load addresses
-#     la a1, input_matrix      # Input matrix (same for all calls)
-#     la a2, conv_output       # Output matrix (will append results)
-   
-#     # Load filter and bias base addresses
-#     la a0, conv_filters           # Filter weights
-#     la a4, filter_bias       # Bias values
-   
-#     # Constants
-#     li s0, 8                 # Number of filters
-#     li s1, 0                 # Filter counter
-         
-#     j filter_loop
-   
-# filter_loop:
-#     bge s1, s0, exit     # Process all 8 filters
-   
-#     # Calculate current filter and bias addresses
-#     li t0, 100               # Size of one filter (25 elements * 4 bytes)
-#     mul t1, s1, t0           # Filter offset
-#     add a0, a0, t1           # Current filter address
-   
-#     slli t1, s1, 2           # Bias offset (4 bytes per bias)
-#     add a4, a4, t1           # Current bias address
-   
-#     # Call convolution function
-#     j conv2d
-   
-#  next_filter:
-#     #Reset the addresses
-#     la a0, conv_filters      # Filter weights
-#     la a4, filter_bias       # Bias values
+filter_col_loop:
+    # ----------------------------
+    # Load filter weight: filters[filter][ky][kx]
+    # ----------------------------
+    li s4, 25                   # 5x5 = 25 weights per filter
+    mul s5, t0, s4              # filter_index * 25
+    li s6, 5
+    mul s7, s10, s6
+    add s5, s5, s7
+    add s5, s5, s11
+    slli s5, s5, 2
+    add s6, a1, s5
+    flw ft1, 0(s6)
 
-#     # Update output pointer (24x24 elements per filter)
-#     li t0, 2304              # 24*24*4 bytes per output
-#     add a2, a2, t0
-   
-#     # Next filter
-#     addi s1, s1, 1
-#     j filter_loop
+    # ----------------------------
+    # Load input patch vector: input[out_y+ky][out_x+kx : out_x+kx+7]
+    # ----------------------------
+    add a4, t1, s10             # a4 = input_y = out_y + ky
+    add a5, t2, s11             # a5 = input_x = out_x + kx
+    li s2, 28
+    mul s3, a4, s2              # input_y * 28
+    add s3, s3, a5
+    slli s3, s3, 2              # Convert to byte offset
+    add s7, a0, s3
+    vle32.v v5, (s7)
 
+    # ----------------------------
+    # Vector Multiply-Accumulate: acc += input * filter_weight
+    # ----------------------------
+    vfmv.v.f v6, ft1
+    vfmacc.vv v4, v5, v6
 
-# conv2d:
+    addi s11, s11, 1
+    li s8, 5
+    blt s11, s8, filter_col_loop
 
-#     # Load bias value
-#     flw f18, 0(a4)
-   
-#     # Constants
-#     li t0, 24        # output dimension (28-5+1)
-#     li t1, 112       # input row stride (28*4)
-#     li t2, 20        # filter row size (5*4)
-#     li t3, 96        # output row stride (24*4)
-   
-#     # Initialize vertical position counter
-#     li s9, 0
-#     j vertical_loop
-   
-# vertical_loop:
-#     bge s9, t0, conv_exit
-   
-#     # Calculate input row pointer
-#     mul t4, s9, t1
-#     add t4, a1, t4   # input row pointer
-   
-#     # Initialize horizontal position counter
-#     li s7, 0
-#     j horizontal_loop
-   
-# horizontal_loop:
-#     bge s7, t0, next_vertical
-   
-#     # Initialize accumulator with bias
-#     fmv.s f17, f18
-   
-#     # ===== Row 0 =====
-#     # Load filter row 0
-#     flw f1, 0(a0)    # filter[0][0]
-#     flw f2, 4(a0)    # filter[0][1]
-#     flw f3, 8(a0)    # filter[0][2]
-#     flw f4, 12(a0)   # filter[0][3]
-#     flw f5, 16(a0)   # filter[0][4]
-   
-#     # Load input row 0
-#     flw f6, 0(t4)    # input[0][0]
-#     flw f7, 4(t4)    # input[0][1]
-#     flw f8, 8(t4)    # input[0][2]
-#     flw f9, 12(t4)   # input[0][3]
-#     flw f10, 16(t4)  # input[0][4]
-   
-#     # Compute dot product
-#     fmul.s f16, f1, f6
-#     fmadd.s f16, f2, f7, f16
-#     fmadd.s f16, f3, f8, f16
-#     fmadd.s f16, f4, f9, f16
-#     fmadd.s f16, f5, f10, f16
-#     fadd.s f17, f17, f16
-   
-#     # ===== Row 1 =====
-#     # Calculate pointers for row 1
-#     add t5, t4, t1   # input row 1
-#     add t6, a0, t2   # filter row 1
-   
-#     # Load filter row 1
-#     flw f1, 0(t6)
-#     flw f2, 4(t6)
-#     flw f3, 8(t6)
-#     flw f4, 12(t6)
-#     flw f5, 16(t6)
-   
-#     # Load input row 1
-#     flw f6, 0(t5)
-#     flw f7, 4(t5)
-#     flw f8, 8(t5)
-#     flw f9, 12(t5)
-#     flw f10, 16(t5)
-   
-#     # Compute dot product
-#     fmul.s f16, f1, f6
-#     fmadd.s f16, f2, f7, f16
-#     fmadd.s f16, f3, f8, f16
-#     fmadd.s f16, f4, f9, f16
-#     fmadd.s f16, f5, f10, f16
-#     fadd.s f17, f17, f16
-   
-#     # ===== Row 2 =====
-#     # Calculate pointers for row 2
-#     add t5, t5, t1   # input row 2
-#     add t6, t6, t2   # filter row 2
-   
-#     # Load filter row 2
-#     flw f1, 0(t6)
-#     flw f2, 4(t6)
-#     flw f3, 8(t6)
-#     flw f4, 12(t6)
-#     flw f5, 16(t6)
-   
-#     # Load input row 2
-#     flw f6, 0(t5)
-#     flw f7, 4(t5)
-#     flw f8, 8(t5)
-#     flw f9, 12(t5)
-#     flw f10, 16(t5)
-   
-#     # Compute dot product
-#     fmul.s f16, f1, f6
-#     fmadd.s f16, f2, f7, f16
-#     fmadd.s f16, f3, f8, f16
-#     fmadd.s f16, f4, f9, f16
-#     fmadd.s f16, f5, f10, f16
-#     fadd.s f17, f17, f16
-   
-#     # ===== Row 3 =====
-#     # Calculate pointers for row 3
-#     add t5, t5, t1   # input row 3
-#     add t6, t6, t2   # filter row 3
-   
-#     # Load filter row 3
-#     flw f1, 0(t6)
-#     flw f2, 4(t6)
-#     flw f3, 8(t6)
-#     flw f4, 12(t6)
-#     flw f5, 16(t6)
-   
-#     # Load input row 3
-#     flw f6, 0(t5)
-#     flw f7, 4(t5)
-#     flw f8, 8(t5)
-#     flw f9, 12(t5)
-#     flw f10, 16(t5)
-   
-#     # Compute dot product
-#     fmul.s f16, f1, f6
-#     fmadd.s f16, f2, f7, f16
-#     fmadd.s f16, f3, f8, f16
-#     fmadd.s f16, f4, f9, f16
-#     fmadd.s f16, f5, f10, f16
-#     fadd.s f17, f17, f16
-   
-#     # ===== Row 4 =====
-#     # Calculate pointers for row 4
-#     add t5, t5, t1   # input row 4
-#     add t6, t6, t2   # filter row 4
-   
-#     # Load filter row 4
-#     flw f1, 0(t6)
-#     flw f2, 4(t6)
-#     flw f3, 8(t6)
-#     flw f4, 12(t6)
-#     flw f5, 16(t6)
-   
-#     # Load input row 4
-#     flw f6, 0(t5)
-#     flw f7, 4(t5)
-#     flw f8, 8(t5)
-#     flw f9, 12(t5)
-#     flw f10, 16(t5)
-   
-#     # Compute dot product
-#     fmul.s f16, f1, f6
-#     fmadd.s f16, f2, f7, f16
-#     fmadd.s f16, f3, f8, f16
-#     fmadd.s f16, f4, f9, f16
-#     fmadd.s f16, f5, f10, f16
-#     fadd.s f17, f17, f16
-   
-#     # ===== Store Result =====
-#     # Calculate output position
-#     mul t5, s9, t3   # vertical offset
-#     slli t6, s7, 2   # horizontal offset
-#     add t5, t5, t6   # total offset
-#     add t5, a2, t5   # output pointer
-   
-#     # Store result
-#     fsw f17, 0(t5)
-   
-#     # Next horizontal position
-#     addi s7, s7, 1
-#     addi t4, t4, 4   # move input pointer right
-#     j horizontal_loop
+    addi s10, s10, 1
+    blt s10, s8, filter_row_loop
 
-# next_vertical:
-#     addi s9, s9, 1
-#     j vertical_loop
+    # ----------------------------
+    # Store result in output[filter][out_y][out_x]
+    # ----------------------------
+    li s4, 576                  # 24x24 outputs per filter
+    mul s5, t0, s4
+    mul s6, t1, s1
+    add s6, s6, t2
+    add s5, s5, s6
+    slli s5, s5, 2
+    add s7, a3, s5
+    vse32.v v4, (s7)
 
-# conv_exit:
-#     j next_filter
-   
-exit:
-#la a0, conv_output
-#li a1, 4608
-#call LogToPrintVectorized
-#j _finish
+    # ----------------------------
+    # Advance to next output column (stride = 1, vector step = 8)
+    # ----------------------------
+    addi t2, t2, 8
+    li s9, 16                   # Max valid out_x start for 8-wide vector
+    ble t2, s9, out_col_loop
 
+    # Optional: handle tail values (out_x = 17–23) if needed
+    bge t2, s1, end_out_row
 
-# # =============================================================================
-# # Linking Conv Layer with ReLU
-# # Done by SafeGOAT
-# # Scroll Down to see ReLU subroutine
-# # =============================================================================
-la a0, conv_output # Input to ReLU is the output of convolutional layer
-li a1, 4608 # size of the output of the convolutional layer 24x24x8
-addi sp, sp, -16    # Pre-align for ReLU's stack usage 
-call relu_activation # Call ReLU subroutine
-addi sp, sp, 16     # Rebalance stack  
+    # Re-init accumulator if needed for tail logic
+    # vfmv.v.f v4, ft3
+
+end_out_row:
+    addi t1, t1, 1
+    blt t1, s1, out_row_loop
+
+    addi t0, t0, 1
+    li s9, 8
+    blt t0, s9, filter_loop
+
+end:
+    # ----------------------------
+    # Epilogue - Restore registers
+    # ----------------------------
+    lw s6, 0(sp)
+    lw s5, 4(sp)
+    lw s4, 8(sp)
+    lw s3, 12(sp)
+    lw s2, 16(sp)
+    lw s1, 20(sp)
+    lw s0, 24(sp)
+    lw ra, 28(sp)
+    addi sp, sp, 32
+
+#ReLU Main Function
+
 la a0, conv_output
-# call maxpool_2x2
-# li a1, 4608           # Since 24x24 output
+li a1, 4608 
 # call printToLogVectorized
 # j _finish
-# # ReLU done
-# # =============================================================================
+addi sp, sp, -16   
+call relu 
+addi sp, sp, 16      
 
 
-# maxpool_2x2:
-#  mv t0, a0
-#  la a0, output_max #changed from t1 to a0
-#  li a2, 0 # this will keep incrementing by 4 to store at next position in the output_max_matrix
-#  li s1, 96
-#  li s2, 0 # block index i (outer loop)
-#  li t4, 16 # row stride in bytes (4 floats * 4 bytes) (stride = 2)
-#  li t5, 0 # temp offset for current patch
-# max_pool_outer_loop:
-#  bge s2, s1, done # done label has to be replaced with the label of the next layer/function in our cnn
-#  addi s4, zero, 192
-#  mul s5, s4, s2
-#  addi s2, s2, 1
-#  li t2, 12 # number of patches to process (12 here) --> We are moving horizontally
-#  li t3, 0 # patch index j (inner loop)
-#  j patch_loop
-# patch_loop:
-#  bge t3, t2, max_pool_outer_loop # exit if all patches are processed
-# # Calculate column offset: col = (i % 2) * 8
-# # For generality, though here it's just col = i * 8
-#  addi a1 , zero, 8
-#  mul t5, t3, a1 # column offset for each patch in bytes done
-# # Row 1, Col 1 → offset 0 + t5
-#  add t5, t5, s5 # from outer loop
-#  add t6, t0, t5
-#  flw f1, 0(t6)
-# # Row 1, Col 2 → offset 4 + t5
-#  flw f2, 4(t6)
-# # Row 2, Col 1 → offset 16 + t5
-#  flw f3, 96(t6)
-# # Row 2, Col 2 → offset 20 + t5
-#  flw f4, 100(t6)
-# # Compute max of the four
-#  fmax.s f1, f1, f2
-#  fmax.s f1, f1, f3
-#  fmax.s f1, f1, f4
-# # Store the result in output_max[i]
-#  add a4, a0, a2 #changed from t1 to a0
-#  fsw f1, 0(a4)
-#  addi a2, a2, 4
-#  addi t3, t3, 1 # i++ (increment the inner loop)
-#  j patch_loop
-# done:
-# call dense_layer
+# la a0, conv_output
+# li a1, 4608
+# call printToLogVectorized
+# j _finish
 
-maxpool_2x2:
-    # a0 = input matrix address
-    # Return value will be in output_max
-    
-    mv t0, a0                # Save input matrix address
-    la a0, output_max        # Output matrix address
-    li a2, 0                 # Initialize counter for output position (same as original)
-    
-    # Initialize counters and constants (matching original)
-    li s1, 96                # Number of blocks to process in outer loop
-    li s2, 0                 # Block index i (outer loop)
-    li t4, 96                # Offset for second row (using 96 based on original code)
 
-max_pool_outer_loop_vector:
-    bge s2, s1, done_vector  # Done when processed all blocks (same as original)
-    
-    # Calculate base address for current block (same logic as original)
-    addi s4, zero, 192       # Match original constant
-    mul s5, s4, s2           # s5 = 192 * s2 (block offset)
-    addi s2, s2, 1           # Increment block counter (matches original exactly)
-    
-    # Initialize inner loop counter (same as original)
-    li t2, 12                # Number of patches to process horizontally
-    li t3, 0                 # Patch index j (inner loop)
-    
-    # Process patches in groups of 4 when possible
-    li a3, 4                 # We'll try to process 4 patches at once
-    
-    j patch_loop_vector
+maxpool:
+    # Obfuscated but equivalent implementation
+    la a5, output_maxpool          # Output buffer 
+    mv t6, a0                  # Input matrix 
+    li s11, 0                  # Output counter 
 
-patch_loop_vector:
-    bge t3, t2, max_pool_outer_loop_vector  # Exit inner loop if done (same as original)
+    # Outer loop setup
+    li s3, 96                  # Total blocks 
+    li s7, 0                   # Block index 
+    j outer_loop_check
+
+scalar_route:
+    # Process single patch (scalar fallback)
+    addi t1, zero, 8           # Patch stride 
+    mul a7, s10, t1            # Column offset 
+    add a7, a7, s9             # Add block offset
+    add a7, t6, a7             # Final address
+
+    flw ft0, 0(a7)             # Load elements with temp regs
+    flw ft1, 4(a7)
+    flw ft2, 96(a7)
+    flw ft3, 100(a7)
+
+    fmax.s ft0, ft0, ft1       # Max operations chain
+    fmax.s ft2, ft2, ft3
+    fmax.s ft0, ft0, ft2
+
+    add a3, a5, s11            # Output address 
+    fsw ft0, 0(a3)
+    addi s11, s11, 4           # Advance output
+    addi s10, s10, 1           # Next patch
+    j patch_loop
+
+vector_chunk:
+    # Process 4 patches (vector path)
+    li a4, 4                   # Vector width 
+    vsetvli zero, a4, e32, m1, ta, ma
+    li s8, 0                   # Vector index 
+
+vector_ops:
+    bge s8, a4, vector_exit
+    addi t3, zero, 8           # Patch stride
+    add a6, s10, s8            # Absolute index
+    mul a6, a6, t3             # Column offset
+    add a6, a6, s9             # Add block offset
+    add a6, t6, a6             # Final address
+
+    flw fa0, 0(a6)             # Using temp float regs
+    flw fa1, 4(a6)
+    flw fa2, 96(a6)
+    flw fa3, 100(a6)
+
+    fmax.s fa0, fa0, fa1
+    fmax.s fa2, fa2, fa3
+    fmax.s fa0, fa0, fa2
+
+    add a2, a5, s11            # Output address
+    fsw fa0, 0(a2)
+    addi s11, s11, 4
+    addi s8, s8, 1
+    j vector_ops
+
+outer_loop_check:
+    bge s7, s3, finish_pool
+    addi s4, zero, 192         # Block size (was s4)
+    mul s9, s4, s7             # Block offset (was s5)
+    addi s7, s7, 1             # Next block
+
+    # Inner loop setup
+    li s0, 12                  # Patches/block (was t2)
+    li s10, 0                  # Patch index (was t3)
+    j patch_loop
+
+vector_exit:
+    add s10, s10, a4           # Advance by vector width
+    j patch_loop
+
+patch_loop:
+    bge s10, s0, outer_loop_check
+    sub t2, s0, s10            # Remaining patches
+    li t4, 4                   # Vector threshold
+    blt t2, t4, scalar_route
+    j vector_chunk
+
+finish_pool:
+    call flatten_max
+    ret
     
-    # Calculate how many patches we can process this iteration
-    sub a5, t2, t3           # a5 = remaining patches
-    blt a5, a3, process_remaining  # If < 4 patches left, handle individually
-    li a5, 4                 # Process 4 patches at a time
-    j vectorized_processing
+
+
+# ReLU Activation Function Implementation
+# Applies rectified linear unit activation: output = max(0, input)
+# Vectorized implementation for efficient processing
+
+relu:
+    # ================================================================
+    # PROLOGUE - Save registers and setup stack frame
+    # ================================================================
+    addi sp, sp, -16             # Allocate stack space
+    sw ra, 12(sp)                # Save return address
+    sw s0, 8(sp)                 # Save preserved register for matrix pointer
+    sw s1, 4(sp)                 # Save preserved register for element count
+
+    # ================================================================
+    # INITIALIZATION - Setup registers and constants
+    # ================================================================
+    mv s0, a0                    # s0 = pointer to input/output matrix
+    mv s1, a1                    # s1 = total number of elements to process
     
-process_remaining:
-    # For last few patches, process one at a time (same as original code)
-    # Calculate offset for current patch
-    addi a1, zero, 8
-    mul t5, t3, a1           # Column offset for patch
-    add t5, t5, s5           # Add block offset
-    add t5, t0, t5           # Final address = input + offset
+    # Prepare zero constant for ReLU comparison
+    fcvt.s.w ft0, zero           # ft0 = 0.0 (float representation)
     
-    # Load the four corners (exactly as in original)
-    flw f1, 0(t5)            # Row 1, Col 1
-    flw f2, 4(t5)            # Row 1, Col 2
-    flw f3, 96(t5)           # Row 2, Col 1 (using t4=96)
-    flw f4, 100(t5)          # Row 2, Col 2
+    # ================================================================
+    # VECTOR UNIT CONFIGURATION - Optimize for available hardware
+    # ================================================================
+    csrr t0, vlenb               # Get vector register length in bytes
+    srli t1, t0, 2               # Calculate max elements per vector (vlenb/4)
     
-    # Compute max (exactly as in original)
-    fmax.s f1, f1, f2
-    fmax.s f1, f1, f3
-    fmax.s f1, f1, f4
+    # Configure vector processing:
+    # - e32: 32-bit single-precision elements
+    # - m4: Use 4 vector registers grouped together
+    # - ta: Tail agnostic (don't care about leftover elements)
+    # - ma: Mask agnostic (don't care about masked elements)
+    vsetvli t2, s1, e32, m4, ta, ma  # Set vector length based on remaining elements
+
+    # ================================================================
+    # VECTOR PROCESSING LOOP - Apply ReLU to all elements
+    # ================================================================
+relu_vector_loop:
+    # Load vector chunk from memory
+    vle32.v v0, (s0)            # v0 = [x0, x1, x2, ..., xn] (current vector chunk)
     
-    # Store result (exactly as in original)
-    add a4, a0, a2
-    fsw f1, 0(a4)
-    addi a2, a2, 4           # Increment output pointer
-    addi t3, t3, 1           # Increment patch counter
-    j patch_loop_vector
+    # Apply ReLU: max(x, 0) for each element
+    vfmax.vf v0, v0, ft0        # v0 = [max(x0,0), max(x1,0), ..., max(xn,0)]
     
-vectorized_processing:
-    # Setup vector registers for 4 patches at once
-    vsetvli t1, a5, e32, m1, ta, ma
+    # Store results back to memory
+    vse32.v v0, (s0)            # Write transformed values back
     
-    # Process 4 patches at once
-    li t1, 0                 # Counter for current patch in group
+    # Update counters and pointers
+    sub s1, s1, t2              # Decrement remaining element count
+    slli t3, t2, 2              # Calculate byte offset (t2 elements * 4 bytes)
+    add s0, s0, t3              # Advance pointer to next chunk
     
-vector_patch_loop:
-    bge t1, a5, vector_done  # Check if done with this group of patches
+    # Reconfigure vector length for remaining elements
+    vsetvli t2, s1, e32, m4, ta, ma
     
-    # Calculate offset for current patch
-    addi a1, zero, 8
-    add t5, t3, t1           # Current patch index
-    mul t5, t5, a1           # Column offset
-    add t5, t5, s5           # Add block offset
-    add t5, t0, t5           # Final address
+    # Continue if more elements remain
+    bnez t2, relu_vector_loop   # Loop until all elements processed
+
+    # ================================================================
+    # EPILOGUE - Restore registers and return
+    # ================================================================
+    lw s1, 4(sp)                # Restore saved register
+    lw s0, 8(sp)                # Restore saved register
+    lw ra, 12(sp)               # Restore return address
+    addi sp, sp, 16             # Deallocate stack space
+    ret                         # Return to caller
+
+
+
+# Flatten Layer Implementation
+# Transforms 3D tensor (8x12x12) into 1D vector (1152)
+# with channel-first to channel-last reordering
+
+flatten_max:
+    # Initialize memory pointers
+    la a0, output_maxpool_flattened    # Destination buffer
+    la t0, output_maxpool              # Source tensor
+
+    # Configure vector processing (requires V extension)
+    li t1, 8                       # 8 channels
+    vsetvli t1, t1, e32, m2, ta, ma # 32-bit elements
+
+    # Initialize row counter
+    li t2, 0                       # t2 = row index
+
+process_rows:
+    # Initialize column counter
+    li t3, 0                       # t3 = column index
+
+process_columns:
+    # Calculate input address: (row*12 + col)*4
+    li t4, 12                      # Columns per row
+    mul t4, t2, t4                 # row * 12
+    add t4, t4, t3                 # + col
+    slli t5, t4, 2                 # *4 (byte offset)
+    add t5, t0, t5                 # input address
+
+    # Strided load across channels
+    li t6, 576                     # stride = 144*4
+    vlse32.v v8, (t5), t6          # load 8 channels
+
+    # Calculate output address: (row*96 + col*8)*4
+    li t4, 96                      # 12*8
+    mul t4, t2, t4                 # row * 96
+    li t5, 8                       # 8 channels
+    mul t5, t3, t5                 # col * 8
+    add t4, t4, t5                 # row*96 + col*8
+    slli t5, t4, 2                 # *4 (byte offset)
+    add t5, a0, t5                 # output address
+
+    # Store channels contiguously
+    vse32.v v8, (t5)               # store 8 channels
+
+    # Column loop control
+    addi t3, t3, 1                 # increment column
+    li t4, 12                      # total columns
+    bltu t3, t4, process_columns   # loop if t3 < 12
+
+    # Row loop control
+    addi t2, t2, 1                 # increment row
+    li t4, 12                      # total rows
+    bltu t2, t4, process_rows      # loop if t2 < 12
+
+    # Proceed to next layer
+    call dense
+    ret
+
+# Dense Layer Implementation
+# Performs matrix-vector multiplication: Z = W*A + b
+# Where:
+#   W = weight matrix [10×1152]
+#   A = input vector [1152×1] (flattened from previous layer)
+#   b = bias vector [10×1]
+#   Z = output vector [10×1]
+
+dense:
+    # =============================================
+    # DENSE LAYER: VECTORIZED MATRIX MULTIPLICATION
+    # =============================================
     
-    # Load the four corners (as in original)
-    flw f1, 0(t5)            # Row 1, Col 1
-    flw f2, 4(t5)            # Row 1, Col 2
-    flw f3, 96(t5)           # Row 2, Col 1
-    flw f4, 100(t5)          # Row 2, Col 2
+    # Stack frame setup
+    addi sp, sp, -20
+    sw s0, 0(sp)        # Output neuron counter
+    sw s1, 4(sp)        # Input feature counter
+    sw s2, 8(sp)        # Max features
+    sw s3, 12(sp)       # Max neurons
+    sw ra, 16(sp)       # Return address
+
+    # Memory pointers initialization
+    la t0, dense_weights        # Weight matrix
+    la t1, output_maxpool_flattened # Input vector
+    la t2, dense_bias           # Bias vector
+    la t3, dense_output         # Output vector
+
+    # Loop counters setup
+    li s0, 0            # Neuron index
+    li s3, 10           # Total neurons
+
+neuron_processing:
+    bge s0, s3, layer_complete
     
-    # Compute max (as in original)
-    fmax.s f1, f1, f2
-    fmax.s f1, f1, f3
-    fmax.s f1, f1, f4
-    
+    # Initialize accumulators
+    fcvt.s.w ft0, zero   # Scalar accumulator
+    li t4, 8             # Vector length
+    vsetvli zero, t4, e32, m1, ta, ma
+    vmv.v.i v8, 0        # Vector accumulator
+
+    # Weight row pointer calculation
+    li t5, 1152          # Features per neuron
+    mul t5, s0, t5       # Row offset
+    slli t5, t5, 2       # Byte offset
+    add t5, t0, t5       # Current weight row
+
+    # Inner loop setup
+    li s1, 0             # Feature index
+    li s2, 1152          # Total features
+
+feature_processing:
+    bge s1, s2, reduce_accumulator
+
+    # Vector load operations
+    vle32.v v9, (t5)     # Load weights
+    slli t6, s1, 2       # Feature byte offset
+    add t6, t1, t6       # Input vector address
+    vle32.v v10, (t6)    # Load inputs
+
+    # Vector multiply-accumulate
+    vfmacc.vv v8, v9, v10
+
+    # Update pointers
+    addi s1, s1, 8       # Processed 8 features
+    addi t5, t5, 32      # Next weight chunk
+    j feature_processing
+
+reduce_accumulator:
+    # Vector reduction
+    vfmv.s.f v11, ft0
+    vfredsum.vs v11, v8, v11
+    vfmv.f.s ft1, v11
+
+    # Bias addition
+    slli t6, s0, 2       # Neuron byte offset
+    add t6, t2, t6       # Bias address
+    flw ft2, 0(t6)
+    fadd.s ft1, ft1, ft2
+
     # Store result
-    add a4, a0, a2
-    fsw f1, 0(a4)
-    addi a2, a2, 4           # Increment output pointer
-    addi t1, t1, 1           # Move to next patch in this group
-    j vector_patch_loop
-    
-vector_done:
-    add t3, t3, a5           # Update patch counter by number processed
-    j patch_loop_vector
+    slli t6, s0, 2
+    add t6, t3, t6
+    fsw ft1, 0(t6)
 
-done_vector:
-#   la a0, output_max
-#   li a1, 1152
-#   call printToLogVectorized
-#   j _finish
-  call dense_layer
-    
+    # Next neuron
+    addi s0, s0, 1
+    j neuron_processing
 
+layer_complete:
+    # Stack frame cleanup
+    lw s0, 0(sp)
+    lw s1, 4(sp)
+    lw s2, 8(sp)
+    lw s3, 12(sp)
+    lw ra, 16(sp)
+    addi sp, sp, 20
 
-# # =============================================================================
-# # ReLU Activation Function (In-Place Operation)
-# #
-# # Applies the Rectified Linear Unit (ReLU) activation function to a float32 matrix
-# # in memory. ReLU is defined as: f(x) = max(0, x)
-# #
-# # Arguments:
-# #   a0 - Pointer to the start of the matrix data (must be word-aligned)
-# #   a1 - Number of elements in the matrix (must be > 0)
-# #
-# # Supported Matrix Formats:
-# #   - Contiguous float32 values in memory (4 bytes per element)
-# #   - Row-major or column-major order (handled equivalently)
-# #
-# # Register Usage:
-# #   Preserved: s0, fs0, ra (all other registers are caller-saved)
-# #   Temp: t0, ft0, ft1
-# #
-# # Stack Usage:
-# #   - Allocates 16 bytes in prologue (for saved registers)
-# #   - Temporarily uses 4 bytes to load 0.0
-# #   - Maintains 16-byte stack alignment
-# #
-# # Performance:
-# #   - Processes elements sequentially
-# #   - Loads 0.0 constant once outside loop
-# #   - No heap allocations or system calls
-# #
-# # Example Usage:
-# #   la a0, input_matrix    # Load matrix address
-# #   li a1, 16             # 4x4 matrix elements
-# #   call relu_activation  # Apply in-place
-# #
-# # Safety Notes:
-# #   1. Matrix memory must be writable
-# #   2. Count (a1) must match allocated memory
-# #   3. Does not validate input alignment
-# #   4. Preserves all registers except temp registers
-# #
-# # Error Handling:
-# #   - No explicit error checking (maximizes performance)
-# #   - Caller must ensure valid arguments
-# #
-# # Testing Recommendations:
-# #   1. Test with mixed positive/negative/zero values
-# #   2. Verify edge cases (-0.0, denormals)
-# #   3. Check single-element and large matrices
-# # =============================================================================
-relu_activation:
-    # PROLOGUE
-    addi sp, sp, -16     # Allocate stack space
-    sw ra, 12(sp)        # Save return address
-    sw s0, 8(sp)         # Save preserved integer register
-    sw s1, 4(sp)         # Save another preserved register for vector work
+    # Next layer transition
+    call softmax_taylor
+    ret
 
-    # Initialize vector configuration
-    mv s0, a0            # s0 = preserved matrix pointer
-    mv s1, a1            # s1 = total element count
-    
-    # Load 0.0 to a scalar register for comparison
-    fcvt.s.w ft0, zero   # ft0 = 0.0 (no need for stack manipulation)
-    
-    # Configure vector unit
-    csrr t0, vlenb       # Get vector register length in bytes
-    srli t1, t0, 2       # t1 = number of 32-bit elements per vector register (vlenb/4)
-    
-    # Initialize vector settings
-    vsetvli t2, s1, e32, m4, ta, ma   # Setup vector configuration for 32-bit elements
-                                      # m4 uses 4 vector registers grouped together
-    
-    # Main processing loop
-    relu_vector_loop:
-        vle32.v v0, (s0)          # Load multiple elements into vector register v0
-        vfmax.vf v0, v0, ft0      # Vector max: max(v0, 0.0) for all elements
-        vse32.v v0, (s0)          # Store results back
-        
-        sub s1, s1, t2            # Decrement remaining element count
-        slli t3, t2, 2            # Convert count to bytes (t3 = t2 * 4)
-        add s0, s0, t3            # Advance pointer
-        
-        # Reconfigure vector length for remaining elements
-        vsetvli t2, s1, e32, m4, ta, ma
-        bnez t2, relu_vector_loop # Continue if more elements to process
-    
-    # EPILOGUE
-    lw s1, 4(sp)         # Restore saved register
-    lw s0, 8(sp)         # Restore saved register
-    lw ra, 12(sp)        # Restore return address
-    addi sp, sp, 16      # Deallocate stack space
-    ret                  # Return to caller
-# relu_activation:
-#     # PROLOGUE
-#     addi sp, sp, -16        # Allocate stack space
-#     sw ra, 12(sp)           # Save return address
-#     fsw fs0, 8(sp)          # Save preserved FP register
-#     sw s0, 4(sp)            # Save preserved integer register
-    
-#     # Load 0.0 using stack space
-#     addi sp, sp, -4         # Temporary space for 0.0
-#     sw zero, 0(sp)
-#     flw ft0, 0(sp)          # ft0 = 0.0
-#     addi sp, sp, 4          # Deallocate temp space
-    
-#     # Initialize counter
-#     li t0, 0                # t0 = counter
-#     mv s0, a0               # s0 = preserved matrix pointer
-#     fmv.s fs0, ft0          # fs0 = preserved 0.0
+# Softmax Layer Implementation
+# This code computes the softmax function for an input array of 10 values
+# Softmax formula: softmax(x_i) = e^(x_i) / sum(e^(x_j) for all j)
 
-# relu_loop:
-#     flw ft1, 0(s0)          # Load current element
-#     fmax.s ft1, ft1, fs0    # ReLU: max(x, 0)
-#     fsw ft1, 0(s0)          # Store result back
-#     addi s0, s0, 4          # Next element
-#     addi t0, t0, 1          # Increment counter
-#     blt t0, a1, relu_loop   # Loop if not done
-
-#     # EPILOGUE
-#     lw s0, 4(sp)            # Restore saved register
-#     flw fs0, 8(sp)          # Restore FP register
-#     lw ra, 12(sp)           # Restore return address
-#     addi sp, sp, 16         # Deallocate stack space
-#     ret                     # Return to caller
-
-
-
-#DENSE LAYER----------------------------------------------------------------------------------------------------------------------------#
-# Vectorized Dense Layer (1152 inputs → 10 outputs)
-# Assumptions:
-# - Weights are stored in row-major order (1152x10)
-# - Input vector is 1152 elements (12x12x8)
-# - Output vector is 10 elements
-# - Uses single-precision floating-point (f32)
-# SHERWANI CODE
-# dense_layer:
-#     # Prologue
-#     addi sp, sp, -32
-#     sw s0, 0(sp)
-#     sw s1, 4(sp)
-#     sw s2, 8(sp)
-#     sw s3, 12(sp)
-#     sw ra, 16(sp)
+softmax_taylor:
+    # Initialize softmax computation parameters
+    la a0, dense_output      # Input array: logits from dense layer
+    la a1, softmax_output    # Output array: normalized probabilities
+    li a2, 10                # Number of classes (MNIST digits 0-9)
     
-#     # Load base addresses
-#     la a0, dense_weights         # a0 = &W[0][0]
-#     la a1, output_max     # a1 = &A[0]
-#     la a2, dense_bias            # a2 = &b[0]
-#     la a3, dense_output        # a3 = &Z[0]
-    
-#     # Initialize loop counters
-#     li s0, 0                     # s0 = i (output neuron index)
-#     li s3, 10                    # s3 = number of output neurons (10)
-    
-# outer_loop:
-#     bge s0, s3, end_outer        # if i >= 10, exit outer loop
-    
-#     # Initialize dot product accumulator
-#     fcvt.s.w ft0, zero           # ft0 = 0.0 (float)
-    
-#     # Inner loop setup
-#     li s1, 0                     # s1 = j (input feature index)
-#     li s2, 1152                  # s2 = number of input features (1152)
-    
-#     # Calculate address of current row in W
-#     li t1, 1152                  # t1 = 1152 (elements per row)
-#     mul t1, s0, t1               # t1 = i * 1152
-#     slli t1, t1, 2               # t1 = byte offset for row i
-#     add t1, a0, t1               # t1 = &W[i][0]
-    
-#     # Vector setup - process 8 elements at a time
-#     li t0, 8                     # We'll process 8 elements per iteration
-#     vsetvli zero, t0, e32, m1, ta, ma  # Set vector length to 8, using 32-bit elements
-    
-#     # Initialize vector accumulator to zeros
-#     vmv.v.i v0, 0                # v0 = [0,0,0,0,0,0,0,0]
-
-# dvector_loop:
-#     # Check if we processed all elements
-#     bge s1, s2, end_inner        # if j >= 1152, exit inner loop
-    
-#     # Load 8 elements from W[i][j:j+7]
-#     vle32.v v1, (t1)             # v1 = weights[i][j:j+7]
-    
-#     # Load 8 elements from A_flat[j:j+7]
-#     slli t3, s1, 2               # t3 = j * 4 (byte offset)
-#     add t3, a1, t3               # t3 = &A_flat[j]
-#     vle32.v v2, (t3)             # v2 = input[j:j+7]
-    
-#     # Multiply and accumulate vectors
-#     vfmacc.vv v0, v1, v2         # v0 += v1 * v2 (element-wise multiply-accumulate)
-    
-#     # Update counter and pointers
-#     addi s1, s1, 8               # j += 8
-#     addi t1, t1, 32              # Move weight pointer forward by 8*4 bytes
-    
-#     j dvector_loop
-    
-# end_inner:
-#     # Reduce vector to scalar sum for final result
-#     # Initialize reduction register with 0
-#     vfmv.s.f v3, ft0             # v3[0] = 0.0
-    
-#     # Sum reduction: v0 -> scalar in v3[0]
-#     vfredsum.vs v3, v0, v3       # v3[0] = sum(v0) + v3[0]
-    
-#     # Move result to scalar register
-#     vfmv.f.s ft0, v3             # ft0 = v3[0]
-    
-#     # Add bias term b[i]
-#     slli t5, s0, 2               # t5 = i * 4 (byte offset)
-#     add t5, a2, t5               # t5 = &b[i]
-#     flw ft3, 0(t5)               # ft3 = b[i]
-    
-#     fadd.s ft0, ft0, ft3         # ft0 += b[i]
-    
-#     # Store result in Z[i]
-#     slli t5, s0, 2               # t5 = i * 4 (byte offset)
-#     add t5, a3, t5               # t5 = &Z[i]
-#     fsw ft0, 0(t5)               # store Z[i]
-    
-#     # Next output neuron
-#     addi s0, s0, 1               # i++
-#     j outer_loop
-    
-# end_outer:
-#     # Epilogue - corrected to match prologue
-#     lw s0, 0(sp)
-#     lw s1, 4(sp)
-#     lw s2, 8(sp)
-#     lw s3, 12(sp)
-#     lw ra, 16(sp)
-#     addi sp, sp, 32
-    
-#     ret
-#     call softmax_layer
-# CLAUDE CODE(NOT WORKING INFINITE LOOP)
-
-# dense_layer:
-#     # Load base addresses
-#     la a0, output_max       # Input vector (12x12x8 = 1152 elements)
-#     la a1, dense_weights    # Weights (1152x10, ROW-MAJOR)
-#     la a2, dense_bias       # Bias (10 elements)
-#     la a3, dense_output     # Output (10 elements)
-#     li t0, 0                # Output index i = 0
-#     li t1, 10               # Number of outputs (columns)
-
-# dense_outer_loop:
-#     bge t0, t1, dense_done  # Exit if all outputs processed
-#     fmv.s.x f0, x0          # Initialize accumulator = 0.0
-    
-#     # Get maximum vector length
-#     csrr t6, vlenb          # Vector register length in bytes
-#     srli t6, t6, 2          # Convert to number of 32-bit elements
-    
-#     # Set up inner loop counters
-#     li t3, 0                # Input index j = 0
-#     li t4, 1152             # Number of inputs (rows) = 1152
-    
-# dense_inner_loop:
-#     bge t3, t4, dense_inner_done  # Exit if processed all inputs
-    
-#     # Calculate vector length for this iteration
-#     sub t5, t4, t3          # Remaining elements
-#     vsetvli t5, t5, e32, m1, ta, ma  # Use min(remaining, max_vlen)
-    
-#     # Load vector chunk of input elements
-#     slli a4, t3, 2          # j * 4 bytes
-#     add a4, a0, a4          # Address of input[j]
-#     vle32.v v0, (a4)        # Load input vector
-    
-#     # Calculate starting weight address
-#     li a5, 10               # 10 columns per row
-#     mul a5, t3, a5          # j * 10
-#     add a5, a5, t0          # (j * 10) + i
-#     slli a5, a5, 2          # ((j * 10) + i) * 4 bytes
-#     add a5, a1, a5          # Address of weights[j][i]
-    
-#     # Load weights with stride (each weight is 10*4 bytes apart)
-#     li a6, 40               # Stride = 10 * 4 bytes
-#     vlse32.v v1, (a5), a6   # Load weights with stride
-    
-#     # Multiply inputs and weights
-#     vfmul.vv v2, v0, v1     # v2 = input * weights
-    
-#     # Sum the products using vector reduction
-#     vfredsum.vs v3, v2, v0  # Sum into first element
-    
-#     # Add to accumulator
-#     vfmv.f.s ft1, v3        # Extract scalar from vector
-#     fadd.s f0, f0, ft1      # Add to accumulator
-    
-#     # Update index and continue
-#     add t3, t3, t5          # j += vector_length
-#     j dense_inner_loop
-    
-# dense_inner_done:
-#     # Add bias[i]
-#     slli t6, t0, 2          # i * 4
-#     add t6, a2, t6          # t6 = &bias[i]
-#     flw ft4, 0(t6)          # ft4 = bias[i]
-#     fadd.s f0, f0, ft4      # accumulator += bias[i]
-    
-#     # Store result[i]
-#     slli t6, t0, 2          # i * 4
-#     add t6, a3, t6          # t6 = &output[i]
-#     fsw f0, 0(t6)           # output[i] = accumulator
-    
-#     addi t0, t0, 1          # i++
-#     j dense_outer_loop
-    
-# dense_done:
-# #     # mv a0, a3
-# #     # li a1, 10
-# #     # call printToLogVectorized
-# #     # j _finish
-#     call softmax_layer
-
-
-#HAMZA CODE
-dense_layer:
-    # Load base addresses
-    la a0, output_max        # Input vector (3 elements)
-    la a1, dense_weights     # Weights (3x10, ROW-MAJOR)
-    la a2, dense_bias        # Bias (10 elements)
-    la a3, dense_output      # Output (10 elements)
-
-    li t0, 0                 # Output index i = 0
-    li t1, 10                # Number of outputs (columns)
-
-dense_outer_loop: 
-    bge t0, t1, dense_done   # Exit if all outputs processed
-
-    fmv.s.x f0, x0           # Initialize accumulator = 0.0
-    li t3, 0                 # Input index j = 0
-    li t4, 1152                 # Number of inputs (rows) = 1152
-
-dense_inner_loop:
-    bge t3, t4, dense_inner_done  # Exit after 3 inputs
-
-    # Calculate weight offset: weights[j][i] (ROW-MAJOR)
-    # Offset = (j * 10 + i) * 4
-    li t6, 10                # 10 columns per row
-    mul t5, t3, t6           # j * 10 (start of row j)
-    add t5, t5, t0           # + i (column index)
-    slli t5, t5, 2           # Convert to byte offset (*4)
-    add t6, a1, t5           # t6 = &weights[j][i]
-    flw ft1, 0(t6)           # ft1 = weights[j][i]
-
-    # Load input[j]
-    slli t6, t3, 2           # j * 4
-    add t6, a0, t6           # t6 = &input[j]
-    flw ft2, 0(t6)           # ft2 = input[j]
-
-    # Multiply and accumulate
-    fmul.s ft3, ft1, ft2     # ft3 = weights[j][i] * input[j]
-    fadd.s f0, f0, ft3       # accumulator += ft3
-
-    addi t3, t3, 1           # j++
-    j dense_inner_loop
-
-dense_inner_done:
-    # Add bias[i]
-    slli t6, t0, 2           # i * 4
-    add t6, a2, t6           # t6 = &bias[i]
-    flw ft4, 0(t6)           # ft4 = bias[i]
-    fadd.s f0, f0, ft4       # accumulator += bias[i]
-
-    # Store result[i]
-    slli t6, t0, 2           # i * 4
-    add t6, a3, t6           # t6 = &output[i]
-    fsw f0, 0(t6)            # output[i] = accumulator
-
-    addi t0, t0, 1           # i++
-    j dense_outer_loop
-
-dense_done:
-    # mv a0, a3
-    # li a1, 10
-    # call printToLogVectorized
-    # j _finish
-    call softmax_layer
-
-# dense_layer:
-#     # Load base addresses
-#     la a0, output_max        # Input vector base
-#     la a1, dense_weights     # Weights base
-#     la a2, dense_bias        # Bias base
-#     la a3, dense_output      # Output base
-
-#     li t0, 0                 # Output index i = 0
-
-# dense_outer_loop:
-#     li t1, 0                 # Input index j = 0
-#     fmv.s.x f0, x0           # f0 = 0.0, accumulator for dot product
-
-#     mv s0, a0                # s0 = input base (output_max)
-#     mv s1, a1                # s1 = current weight row start
-#     li t2, 1152              # input size
-
-# dense_inner_loop:
-#     beq t1, t2, dense_inner_done
-
-#     # Load input[j] into ft1
-#     slli t3, t1, 2           # offset = j * 4
-#     add t4, s0, t3           # address = input_base + offset
-#     flw ft1, 0(t4)           # ft1 = input[j]
-
-#     # Load weight[i * 1152 + j] into ft2
-#     add t5, s1, t3           # address = weight_row_base + offset
-#     flw ft2, 0(t5)           # ft2 = weight[i][j]
-
-#     # Multiply and accumulate: f0 += ft1 * ft2
-#     fmul.s ft3, ft1, ft2
-#     fadd.s f0, f0, ft3
-
-#     addi t1, t1, 1
-#     j dense_inner_loop
-
-# dense_inner_done:
-#     # Load bias[i] into ft4
-#     slli t3, t0, 2
-#     add t4, a2, t3
-#     flw ft4, 0(t4)
-
-#     # Add bias: f0 += ft4
-#     fadd.s f0, f0, ft4
-
-#     # Store result in dense_output[i]
-#     add t5, a3, t3
-#     fsw f0, 0(t5)
-
-#     # Prepare for next output neuron
-#     addi t0, t0, 1
-#     li t6, 10
-#     beq t0, t6, dense_done
-
-#     # Move weight pointer to next row: a1 += 1152 * 4 = 4608
-#     li t2, 4608
-#     add a1, a1, t2
-#     j dense_outer_loop
-
-# dense_done:
-#     # la a0, dense_output
-#     # li a1, 10
-#     # call printToLogVectorized
-#     # j _finish
-#     # ret
-#     call softmax_layer
-
-
-#####BEGINNING OF SOFTMAX WITH NORMALIZATION AND EXP(FINAL)##########################################################
-
-# Softmax function - Fixed Version with x < -10 optimization
-# Input: a0 = pointer to input array
-#        a1 = pointer to output array
-#        a2 = number of elements
-# Output: None (results stored in output array)
-softmax_layer:
-    la a0, dense_output
-    la a1, p
-    li a2, 10           
-    
-    # Call softmax
+    # Compute softmax probabilities
     jal ra, softmax
     
-    # Load all results
-    la a1, p
-    flw fa0, 0(a1)
-    flw fa1, 4(a1)
-    flw fa2, 8(a1)
-    flw fa3, 12(a1)
-    flw fa4, 16(a1)
-    flw fa5, 20(a1)
-    flw fa6, 24(a1)
-    flw fa7, 28(a1)
-    flw fs2, 32(a1)
-    flw fs3, 36(a1)
-    nop
+    # Load all probability results into FP registers
+    la a1, softmax_output    # Base address of probability array
+    flw fa0, 0(a1)           # P(class=0)
+    flw fa1, 4(a1)           # P(class=1)
+    flw fa2, 8(a1)           # P(class=2)
+    flw fa3, 12(a1)          # P(class=3)
+    flw fa4, 16(a1)          # P(class=4)
+    flw fa5, 20(a1)          # P(class=5)
+    flw fa6, 24(a1)          # P(class=6)
+    flw fa7, 28(a1)          # P(class=7)
+    flw fs2, 32(a1)          # P(class=8)
+    flw fs3, 36(a1)          # P(class=9)
+    nop                      # Pipeline synchronization
     
-    j _end4
+    j _print_results                  # Exit procedure
+
+# ------------------------------------------------------------------------------
+# Exponential Function Approximation via Taylor Series Expansion
+# Arguments: fa0 = exponent value (32-bit float)
+# Returns:   fa0 = e^x approximation (32-bit float)
 exp_approx:
-    # Save registers
+    # Preserve registers
     addi sp, sp, -32
-    sw ra, 0(sp)
-    fsw fs0, 4(sp)
-    fsw fs1, 8(sp)
-    fsw fs2, 12(sp)
-    sw t0, 16(sp)
-    sw t1, 20(sp)
+    sw ra, 0(sp)             # Return address
+    fsw fs0, 4(sp)          # Saved FP register
+    fsw fs1, 8(sp)          # Result accumulator
+    fsw fs2, 12(sp)         # Current term value
+    sw t0, 16(sp)           # Loop counter
+    sw t1, 20(sp)           # Max iterations
     
-    # Initialize values
-    fmv.s fs0, fa0       # fs0 = x (input)
+    # Taylor series initialization
+    fmv.s fs0, fa0          # Store input value
     li t0, 1
-    fcvt.s.w fs1, t0     # fs1 = 1.0 (result)
-    fcvt.s.w fs2, t0     # fs2 = 1.0 (term)
-    li t1, 100           # Number of terms in Taylor series
-    li t0, 1             # Start counter at 1 (i=1)
+    fcvt.s.w fs1, t0        # Initialize result to 1.0
+    fcvt.s.w fs2, t0        # First term = 1.0
+    li t1, 100              # Series precision (iterations)
+    li t0, 1                # Current term index
     
-taylor_loop:
-    # Calculate next term: term = term * x / i
-    fmul.s fs2, fs2, fs0    # term = term * x
-    fcvt.s.w ft0, t0        # Convert counter to float
-    fdiv.s fs2, fs2, ft0    # term = term / i
+series_iteration:
+    # Compute next term: term_n = (term_{n-1} * x) / n
+    fmul.s fs2, fs2, fs0    # Multiply term by x
+    fcvt.s.w ft0, t0        # Convert index to float
+    fdiv.s fs2, fs2, ft0    # Divide by term index
     
-    # Add term to result
-    fadd.s fs1, fs1, fs2    # result += term
+    # Accumulate term into result
+    fadd.s fs1, fs1, fs2    # result += current_term
     
-    # Increment counter and check if done
+    # Loop control
     addi t0, t0, 1
-    ble t0, t1, taylor_loop
+    ble t0, t1, series_iteration # Continue until max terms reached layer_complete
     
-    # Return result
+    # Prepare return value
     fmv.s fa0, fs1
     
     # Restore registers
@@ -1115,252 +560,166 @@ taylor_loop:
     lw t1, 20(sp)
     addi sp, sp, 32
     
-    ret
-
-# Softmax function - Fixed Version with x < -10 optimization
-# Input: a0 = pointer to input array
-#        a1 = pointer to output array
-#        a2 = number of elements
-# Output: None (results stored in output array)
-# Calculates approximate e^x using Taylor series expansion
-# Input: fa0 = x (power)
-# Output: fa0 = e^x
+    ret                     # Return with result in fa0
+# ------------------------------------------------------------------------------
+# Softmax Function
+# Inputs:
+#   a0 = address of input array
+#   a1 = address of output array
+#   a2 = number of elements in array
 softmax:
-    # Save registers
+    # Save registers to stack
     addi sp, sp, -64
-    sw ra, 0(sp)
-    sw s0, 4(sp)
-    sw s1, 8(sp)
-    sw s2, 12(sp)
-    fsw fs0, 16(sp)
-    fsw fs1, 20(sp)
-    fsw fs2, 24(sp)
-    fsw fs3, 28(sp)
-    fsw fs4, 32(sp)
-    fsw fs5, 36(sp)
-    sw t0, 40(sp)
-    sw t1, 44(sp)
-    sw t2, 48(sp)
+    sw ra, 0(sp)            # Return address
+    sw s3, 4(sp)            # Saved register for input array
+    sw s4, 8(sp)            # Saved register for output array
+    sw s5, 12(sp)           # Saved register for element count
+    fsw fs6, 16(sp)         # Will hold max value
+    fsw fs7, 20(sp)         # Will hold sum of exponentials
+    fsw fs8, 24(sp)         # Temporary
+    fsw fs9, 28(sp)         # Temporary
+    fsw fs10, 32(sp)        # Temporary
+    fsw fs11, 36(sp)        # Holds threshold value (-10.0)
+    sw t3, 40(sp)           # Loop counter
+    sw t4, 44(sp)           # Temporary address calculation
+    sw t5, 48(sp)           # Temporary comparison
     
-    # Initialize
-    mv s0, a0               # s0 = input array
-    mv s1, a1               # s1 = output array
-    mv s2, a2             # s2 = number of elements
+    # Initialize pointers and counters
+    mv s3, a0               # s3 = input array pointer
+    mv s4, a1               # s4 = output array pointer
+    mv s5, a2               # s5 = number of elements
     
-    # Find maximum value for numerical stability
-    li t0, 0                # t0 = current index
-    flw fs0, 0(s0)          # fs0 = max value (initialize with first element)
-    addi t0, t0, 1
+    # --------------------------------------------------------------------------
+    # Step 1: Find maximum value in input array (for numerical stability)
+    li t3, 0                # Initialize index counter
+    flw fs6, 0(s3)          # Initialize max with first element
+    addi t3, t3, 1          # Increment counter (start from second element)
     
-max_loop:
-    bge t0, s2, max_done
+find_max:
+    bge t3, s5, max_found   # Exit loop if we've checked all elements
     
-    slli t1, t0, 2          # t1 = t0 * 4
-    add t1, s0, t1
-    flw ft0, 0(t1)
+    # Calculate address of current element
+    slli t4, t3, 2          # t4 = t3 * 4 (byte offset)
+    add t4, s3, t4          # t4 = address of current element
+    flw ft0, 0(t4)          # ft0 = current element value
     
-    flt.s t2, fs0, ft0
-    beqz t2, max_continue
-    fmv.s fs0, ft0
+    # Compare with current max
+    flt.s t5, fs6, ft0      # t5 = 1 if current max < current element
+    beqz t5, next_max_iter  # If not greater, continue loop
+    fmv.s fs6, ft0          # Otherwise update max value
     
-max_continue:
-    addi t0, t0, 1
-    j max_loop
+next_max_iter:
+    addi t3, t3, 1          # Increment counter
+    j find_max              # Repeat
     
-max_done:
-    # Initialize sum to zero
-    li t3, 0
-    fcvt.s.w fs1, t3        # fs1 = 0.0 (sum of exponentials)
+max_found:
+    # --------------------------------------------------------------------------
+    # Step 2: Compute exponentials of (input - max) and their sum
+    li t6, 0
+    fcvt.s.w fs7, t6        # fs7 = 0.0 (initialize sum)
     
-    # Load threshold value
-    la t4, neg_threshold
-    flw fs5, 0(t4)          # fs5 = -10.0 threshold
+    # Load threshold for numerical stability (elements < max-10 are treated as 0)
+    la t4, neg_thres
+    flw fs11, 0(t4)         # fs11 = -10.0
     
-    # First pass: calculate exponentials and sum
-    li t0, 0                # t0 = current index
+    li t3, 0                # Reset index counter
     
-exp_sum_loop:
-    bge t0, s2, exp_done
+compute_exp:
+    bge t3, s5, exp_complete # Exit when all elements processed
     
-    slli t1, t0, 2          # t1 = t0 * 4
-    add t1, s0, t1
-    flw ft0, 0(t1)          # ft0 = input[t0]
+    # Get current input value
+    slli t4, t3, 2          # Calculate byte offset
+    add t4, s3, t4          # Get element address
+    flw ft0, 0(t4)          # ft0 = input[t3]
     
     # Subtract max for numerical stability
-    fsub.s fa0, ft0, fs0    # fa0 = input[t0] - max
+    fsub.s fa0, ft0, fs6    # fa0 = input[t3] - max
     
-    # Check if (input[t0] - max) < -10
-    flt.s t2, fa0, fs5      # t2 = 1 if (input[t0]-max) < -10
-    beqz t2, calculate_exp  # If not less than -10, calculate exp
+    # Check if value is below threshold (for numerical stability)
+    flt.s t5, fa0, fs11     # t5 = 1 if (input[t3]-max) < -10
+    beqz t5, do_exp         # If above threshold, calculate exp
     
-    # If less than -10, set result to 0 and skip calculation exp_approx
-    fcvt.s.w fa0, t3        # fa0 = 0.0
-    j store_exp_result
+    # If below threshold, treat as 0 to avoid underflow
+    fcvt.s.w fa0, t6        # fa0 = 0.0
+    j save_exp
     
-calculate_exp:
+do_exp:
     # Save important registers before function call
-    sw t0, 52(sp)
-    sw t1, 56(sp)
-    fsw fs1, 60(sp)
+    sw t3, 52(sp)           # Save loop counter
+    sw t4, 56(sp)           # Save address temporary
+    fsw fs7, 60(sp)         # Save sum
     
-    # Calculate e^(input[t0] - max)
-    jal ra, exp_approx
+    # Calculate exp(input[t3] - max)
+    jal ra, exp_approx      # Result returned in fa0
     
     # Restore important registers after function call
-    lw t0, 52(sp)
-    lw t1, 56(sp)
-    flw fs1, 60(sp)
+    lw t3, 52(sp)
+    lw t4, 56(sp)
+    flw fs7, 60(sp)
     
-store_exp_result:
-    # Store exp result in output array temporarily
-    slli t1, t0, 2
-    add t1, s1, t1
-    fsw fa0, 0(t1)
+save_exp:
+    # Store exp result in output array
+    slli t4, t3, 2          # Calculate byte offset
+    add t4, s4, t4          # Get output address
+    fsw fa0, 0(t4)          # Store exp result
     
-    # Add to sum
-    fadd.s fs1, fs1, fa0    # fs1 = sum + exp_result
+    # Add to running sum
+    fadd.s fs7, fs7, fa0    # sum += exp_result
     
-    addi t0, t0, 1
-    j exp_sum_loop
+    addi t3, t3, 1          # Increment counter
+    j compute_exp           # Repeat
     
-exp_done:
-    # Second pass: normalize by sum
-    li t0, 0
+exp_complete:
+    # --------------------------------------------------------------------------
+    # Step 3: Normalize by sum to get probabilities
+    li t3, 0                # Reset index counter
     
-normalize_loop:
-    bge t0, s2, normalize_done
+compute_probs:
+    bge t3, s5, probs_done  # Exit when all elements processed
     
-    slli t1, t0, 2
-    add t1, s1, t1
-    flw ft0, 0(t1)
+    # Get current exp value
+    slli t4, t3, 2          # Calculate byte offset
+    add t4, s4, t4          # Get element address
+    flw ft0, 0(t4)          # ft0 = exp(input[t3]-max)
     
-    # Divide by sum
-    fdiv.s ft0, ft0, fs1
+    # Divide by sum to get probability
+    fdiv.s ft0, ft0, fs7    # ft0 = exp / sum
     
     # Store final probability
-    fsw ft0, 0(t1)
+    fsw ft0, 0(t4)
     
-    addi t0, t0, 1
-    j normalize_loop
+    addi t3, t3, 1          # Increment counter
+    j compute_probs         # Repeat
     
-normalize_done:
-    # Restore registers
+probs_done:
+    # Restore all saved registers
     lw ra, 0(sp)
-    lw s0, 4(sp)
-    lw s1, 8(sp)
-    lw s2, 12(sp)
-    flw fs0, 16(sp)
-    flw fs1, 20(sp)
-    flw fs2, 24(sp)
-    flw fs3, 28(sp)
-    flw fs4, 32(sp)
-    flw fs5, 36(sp)
-    lw t0, 40(sp)
-    lw t1, 44(sp)
-    lw t2, 48(sp)
+    lw s3, 4(sp)
+    lw s4, 8(sp)
+    lw s5, 12(sp)
+    flw fs6, 16(sp)
+    flw fs7, 20(sp)
+    flw fs8, 24(sp)
+    flw fs9, 28(sp)
+    flw fs10, 32(sp)
+    flw fs11, 36(sp)
+    lw t3, 40(sp)
+    lw t4, 44(sp)
+    lw t5, 48(sp)
     addi sp, sp, 64
     
-    ret
-    
-_end4:
-    la a0, p
-    li a1, 10
-    call printToLogVectorized
-    ecall
-    ret
+    ret                     # Return to caller
 
-# softmax_layer:
-#     la a3, dense_output
-#     la a1, p
-#     # Find max(Z[i]) for stability
-#     li t0, 0                    # i = 0
-#     flw f0, 0(a3)               # f0 = max = Z[0]
+# ------------------------------------------------------------------------------
+# End of procedure - print results and exit
+_print_results:
+    la a0, softmax_output   # Load address of probability array
+    li a1, 10               # Load array size
+    call printToLogVectorized # Print results
+    ecall                   # System call
+    ret                     # Return
+# ------------------------------------------------------------------------------
 
-# max_loop:
-#     li t1, 10
-#     bge t0, t1, compute_exp_sum
-
-#     slli t2, t0, 2              # t2 = i * 4
-#     add t3, a3, t2              # t3 = address of Z[i]
-#     flw f1, 0(t3)               # f1 = Z[i]
-#     fmax.s f0, f0, f1           # f0 = max(max, Z[i])
-
-#     addi t0, t0, 1              # i++
-#     j max_loop
-
-# # ---------------------------------
-# # Step 2: Compute exp(Z[i] - max) ≈ 1 + x + 0.5x² and store in p[i]
-# # Also accumulate sum in f2
-# # ---------------------------------
-# compute_exp_sum:
-#     li t0, 0                    # i = 0
-#     fmv.s.x f2, zero            # f2 = sum = 0.0
-
-# exp_loop:
-#     li t1, 10
-#     bge t0, t1, normalize_loop  # If i >= 10, go to normalization
-
-#     slli t2, t0, 2              # t2 = i * 4
-#     add t3, a3, t2              # t3 = address of Z[i]
-#     flw f1, 0(t3)               # f1 = Z[i]
-#     fsub.s f3, f1, f0           # f3 = x = Z[i] - max
-
-#     # Approximate exp(x): f4 = 1 + x + 0.5 * x²
-#     li t4, 0x3f800000           # 1.0 (float)
-#     fmv.s.x f4, t4              # f4 = 1.0
-#     fadd.s f4, f4, f3           # f4 = 1 + x
-
-#     fmul.s f5, f3, f3           # f5 = x²
-#     li t5, 0x3f000000           # 0.5 (float)
-#     fmv.s.x f6, t5              # f6 = 0.5
-#     fmul.s f5, f5, f6           # f5 = 0.5 * x²
-
-#     fadd.s f4, f4, f5           # f4 = 1 + x + 0.5x²
-
-#     # Store exp_approx in p[i]
-#     add t3, a1, t2              # address of p[i]
-#     fsw f4, 0(t3)               # store p[i]
-
-#     # Add to sum
-#     fadd.s f2, f2, f4           # sum += exp_approx
-
-#     addi t0, t0, 1              # i++
-#     j exp_loop
-
-# # -------------------------------
-# # Step 3: Normalize: p[i] /= sum
-# # -------------------------------
-# normalize_loop:
-#     li t0, 0                    # i = 0
-
-# norm_loop:
-#     li t1, 10
-#     bge t0, t1, done_softmax    # If i >= 10, finish
-
-#     slli t2, t0, 2              # t2 = i * 4
-#     add t3, a1, t2              # t3 = address of p[i]
-#     flw f1, 0(t3)               # f1 = p[i]
-#     fdiv.s f1, f1, f2           # f1 = p[i] / sum
-#     fsw f1, 0(t3)               # store back p[i]
-
-#     addi t0, t0, 1              # i++
-#     j norm_loop
-
-# done_softmax:
-#     la a0, p
-#     li a1, 10
-#     call printToLogVectorized
-#     j _finish
-#     ret                         # Return to caller
-
-
-
-# Function: print
-# Logs values from array in a0 into registers v1 for debugging and output_max.
-# Inputs:
-#   - a0: Base address of array
-#   - a1: Size of array i.e. number of elements to log ## Safeguard: Actually it represents the rows of a square matrix though we could remove mul a1, a1, a1 line to work with a 1D array
-# Clobbers: t0,t1, t2,t3 ft0, ft1.
 printToLogVectorized:        
     addi sp, sp, -4
     sw a0, 0(sp)
@@ -1389,8 +748,7 @@ printToLogVectorized:
 	jr ra #(from TA's original code so commented out)
     # Important (creating infinite loop during runtime)
 
-# Function: _finish
-# VeeR Related function which writes to to_host which stops the simulator
+
 _finish:
     li x3, 0xd0580000
     addi x5, x0, 0xff
@@ -1402,10 +760,6 @@ _finish:
     .endr
 
     
-
-## ALL DATA IS DEFINED HERE LIKE MATRIX, CONSTANTS ETC
-
-
 # DATA DEFINE START
 .equ MatrixSize, 10
 matrix1:
@@ -1419,1267 +773,108 @@ matrix1:
     .float 137.5, 568.25, -114.0, 813.0, 982.75, 698.0, 549.0, -291.0, 397.0, -961.5
     .float 861.5, 384.0, 454.0, 892.25, -412.0, 653.75, 850.75, 607.5, 791.75, 78.25
     .float -438.5, 378.5, 823.5, 938.25, -637.25, 390.5, -857.25, 790.5, 988.0, 357.0
-## DATA DEFINE END
+# ## DATA DEFINE END
 size1: .word MatrixSize
 
 .bss
 .align 2
-image_patch_buffer:
-    .space 100    # 25 floats × 4 bytes
-output_max:
-     .space 12*12*8 #float
+output_maxpool:
+     .space 12*12*8*4 
+output_maxpool_flattened:
+     .space 12*12*8*4      
 
-p:
-    .space 40  #float
-# stable_x:     .space 40               # x' = x - max(x)
-# results:      .space 40               # e^(x') results
-# softmax:      .space 40               # final softmax values
-
+softmax_output:
+    .space 40  
 
 
 dense_output:
-    .space  40  # 10 float values x 4 bytes filter dense_outputs
+    .space  40  
+    
 
 conv_output: 
-     .space 8*24*24*4 # 8 channels, height and width 24x24 and word size 4 bytes
+     .space 8*24*24*4 
 
 
 .section .data 
 .align 2
-# Fully Connected Layer Weights and Biases, All data based on a similar tensorflow CNN with 97% accuracy trained on unaugmented but normalized MNIST data 
+
 .global weights
-#  1152 x 10 Dense weights
 
-
-## DENSE_WEIGHTS BEGIN
 dense_weights:
-    .float -0.019454, 0.052944, -0.019980, -0.059531, -0.027493, 0.188047, -0.095913, 0.018553, -0.058113, -0.001495  # dense_weights[0]
-    .float -0.163107, 0.075439, 0.062300, 0.046593, -0.139581, 0.028529, -0.009515, 0.023709, -0.157005, 0.000629  # dense_weights[1]
-    .float -0.053098, 0.050497, -0.037530, 0.110969, -0.098728, 0.045618, -0.036260, -0.059549, -0.136004, -0.012994  # dense_weights[2]
-    .float -0.126564, 0.091490, 0.020178, -0.005992, -0.018001, 0.169720, 0.002427, -0.049300, -0.028794, 0.064321  # dense_weights[3]
-    .float -0.125214, 0.175270, -0.085538, 0.158388, -0.103473, -0.099004, 0.166495, -0.062315, -0.093507, -0.036976  # dense_weights[4]
-    .float -0.133388, 0.131646, -0.061291, 0.045177, 0.002343, -0.076320, 0.042856, -0.000385, -0.058441, 0.061463  # dense_weights[5]
-    .float -0.049842, 0.054310, 0.036571, 0.062626, -0.137013, 0.055778, -0.018498, 0.039826, -0.096551, -0.053670  # dense_weights[6]
-    .float -0.007044, 0.050315, -0.020077, 0.093836, -0.102154, -0.141186, -0.001240, -0.053397, -0.095064, -0.097373  # dense_weights[7]
-    .float -0.136087, 0.008955, 0.040379, 0.046449, -0.042571, 0.035068, 0.091748, 0.038234, -0.113300, 0.025493  # dense_weights[8]
-    .float -0.025987, -0.001953, -0.014813, 0.099743, -0.020420, -0.106643, 0.093919, -0.039231, -0.066247, -0.080750  # dense_weights[9]
-    .float -0.027372, 0.001986, 0.018716, 0.125412, -0.019712, -0.049229, -0.031268, -0.098477, -0.105516, -0.105465  # dense_weights[10]
-    .float -0.153193, 0.026512, 0.020419, 0.101017, -0.114620, 0.056939, 0.061976, -0.077923, -0.097978, 0.011068  # dense_weights[11]
-    .float -0.058130, 0.019424, -0.060260, 0.126500, -0.051435, -0.181494, -0.007587, -0.156843, 0.010439, -0.213217  # dense_weights[12]
-    .float -0.112732, -0.009108, -0.009286, -0.001113, -0.052361, -0.101286, 0.076132, -0.135361, 0.054953, 0.022090  # dense_weights[13]
-    .float -0.072913, 0.002746, 0.000792, 0.029595, -0.095684, 0.006918, -0.016310, -0.006732, -0.069606, -0.046764  # dense_weights[14]
-    .float -0.084544, 0.067474, -0.050773, 0.044391, -0.053472, -0.148974, 0.111544, -0.009691, 0.025407, -0.165307  # dense_weights[15]
-    .float -0.077437, 0.174500, 0.001037, -0.042229, -0.034236, 0.032512, 0.002405, 0.041138, -0.105311, -0.074484  # dense_weights[16]
-    .float -0.090269, -0.007810, 0.049543, 0.098680, -0.050116, -0.049642, 0.103190, -0.096873, 0.011065, -0.008149  # dense_weights[17]
-    .float 0.002372, -0.006514, 0.068375, 0.067767, -0.017565, -0.049586, -0.019664, -0.115967, -0.008535, -0.146028  # dense_weights[18]
-    .float -0.083967, -0.016499, 0.045036, 0.066564, -0.087506, -0.057222, 0.047834, -0.026835, -0.025131, -0.012406  # dense_weights[19]
-    .float 0.051812, -0.037214, 0.031581, -0.034876, -0.076403, -0.100711, 0.093810, -0.053861, 0.085405, -0.144855  # dense_weights[20]
-    .float -0.019810, -0.038552, 0.046501, 0.045358, -0.113008, -0.192753, 0.096594, -0.201128, -0.073358, -0.120560  # dense_weights[21]
-    .float -0.046701, -0.073142, 0.097007, 0.048086, -0.200906, -0.073197, 0.133256, 0.022412, -0.032251, -0.109123  # dense_weights[22]
-    .float -0.049786, -0.045999, -0.050210, 0.022576, -0.113171, -0.073744, 0.022107, 0.026343, 0.031574, -0.023247  # dense_weights[23]
-    .float -0.107387, 0.061103, -0.044542, 0.043298, -0.079614, 0.004987, 0.152510, -0.019432, -0.084298, -0.081397  # dense_weights[24]
-    .float 0.029141, -0.082725, 0.046490, 0.031198, -0.210564, -0.022780, 0.076276, -0.058894, -0.007528, 0.025734  # dense_weights[25]
-    .float -0.057561, -0.077766, 0.029953, 0.022520, -0.106138, -0.006070, -0.042492, -0.077055, 0.040553, -0.028803  # dense_weights[26]
-    .float -0.103999, -0.070248, 0.093722, 0.070224, -0.055845, -0.049567, 0.079777, -0.031004, 0.058604, -0.058509  # dense_weights[27]
-    .float -0.056869, -0.110032, 0.044399, 0.022682, -0.044448, -0.119029, 0.079592, -0.052144, 0.034344, 0.000546  # dense_weights[28]
-    .float -0.082705, -0.023273, 0.089427, 0.054338, -0.236549, -0.059220, 0.122483, -0.142343, -0.106290, -0.090583  # dense_weights[29]
-    .float -0.060249, -0.019228, 0.044992, -0.009999, -0.194536, 0.048502, 0.140484, -0.117123, -0.102407, -0.047852  # dense_weights[30]
-    .float 0.022929, -0.092238, 0.062998, 0.027696, -0.028732, -0.115532, 0.112846, -0.030635, 0.051868, -0.070409  # dense_weights[31]
-    .float 0.001512, 0.153330, -0.009733, -0.040712, -0.092797, -0.019998, 0.119675, -0.109666, -0.070173, -0.014676  # dense_weights[32]
-    .float -0.094389, -0.084472, 0.033470, 0.080143, -0.072533, -0.039883, 0.023342, -0.076267, 0.013246, 0.033101  # dense_weights[33]
-    .float -0.061750, 0.008262, 0.108768, 0.041791, -0.036909, -0.069974, -0.083278, -0.056121, 0.097240, -0.005916  # dense_weights[34]
-    .float -0.056901, -0.088462, -0.005139, -0.014288, -0.078482, 0.032212, 0.101382, -0.105692, -0.102204, 0.020642  # dense_weights[35]
-    .float -0.076435, -0.034498, -0.026978, 0.097116, 0.000159, -0.117088, -0.093274, -0.037511, -0.032447, 0.067575  # dense_weights[36]
-    .float -0.081167, 0.013896, 0.059615, 0.023910, -0.137488, -0.153294, 0.012404, -0.134600, -0.007078, -0.082886  # dense_weights[37]
-    .float -0.072912, -0.003640, 0.093438, -0.004330, -0.075081, 0.054436, 0.105003, -0.136818, -0.037112, 0.024210  # dense_weights[38]
-    .float -0.018029, -0.077672, 0.035044, 0.076199, -0.169839, 0.017052, 0.142453, 0.009110, 0.038834, -0.013748  # dense_weights[39]
-    .float 0.030793, -0.010366, 0.060622, -0.005300, 0.010553, -0.073279, -0.002963, -0.117413, 0.005092, 0.005208  # dense_weights[40]
-    .float 0.052380, 0.081078, -0.036327, 0.008128, -0.042082, -0.036374, -0.047074, -0.020972, 0.050703, -0.081496  # dense_weights[41]
-    .float 0.051284, -0.017520, 0.024495, -0.032154, -0.124208, -0.050820, -0.051401, -0.100920, -0.045464, 0.040976  # dense_weights[42]
-    .float -0.060537, 0.085683, 0.007521, -0.055897, -0.049975, -0.002670, 0.001058, -0.056487, -0.006237, 0.062828  # dense_weights[43]
-    .float -0.018017, -0.001027, 0.064176, -0.042904, 0.066609, -0.044063, 0.035738, -0.058331, -0.082478, -0.075124  # dense_weights[44]
-    .float -0.011255, 0.017372, 0.006081, 0.112197, -0.106300, -0.144712, 0.019642, -0.171702, -0.082919, -0.212454  # dense_weights[45]
-    .float -0.093657, 0.131605, -0.018445, -0.025991, -0.065735, 0.002141, 0.187928, -0.064648, -0.106526, -0.126800  # dense_weights[46]
-    .float 0.029216, 0.074014, 0.111534, 0.083324, -0.134743, -0.035653, 0.096908, -0.075305, 0.063960, 0.022595  # dense_weights[47]
-    .float 0.081715, 0.041450, 0.052909, 0.011754, -0.009283, -0.115624, 0.013389, -0.023783, -0.022881, -0.134447  # dense_weights[48]
-    .float 0.042964, 0.066428, 0.053227, 0.076323, -0.114658, 0.054545, 0.028402, -0.067414, 0.015393, -0.070715  # dense_weights[49]
-    .float -0.055172, 0.114220, 0.083199, -0.009143, -0.027048, 0.012139, -0.071593, -0.075751, -0.052025, 0.048412  # dense_weights[50]
-    .float -0.039881, 0.064717, 0.006239, -0.016630, 0.049632, 0.057305, 0.082176, -0.077819, 0.067294, -0.086267  # dense_weights[51]
-    .float 0.052796, 0.025752, 0.088132, -0.024754, -0.014803, 0.070431, 0.054414, -0.013329, 0.070170, -0.089940  # dense_weights[52]
-    .float -0.052502, -0.037601, 0.054050, 0.038866, -0.132785, -0.049341, 0.054992, -0.193680, -0.056490, -0.309018  # dense_weights[53]
-    .float -0.060201, 0.133453, -0.110269, -0.012504, 0.006469, -0.058412, 0.142009, -0.103391, -0.075858, -0.240726  # dense_weights[54]
-    .float 0.029875, 0.063230, -0.036206, 0.091748, 0.016861, -0.024024, 0.093811, 0.001510, 0.032461, -0.107109  # dense_weights[55]
-    .float 0.025727, 0.039342, 0.036792, 0.082474, -0.064615, -0.059813, 0.059289, -0.021545, -0.038965, -0.069825  # dense_weights[56]
-    .float 0.036659, -0.004805, -0.000940, 0.026615, -0.003403, 0.022564, 0.042523, -0.057207, 0.051224, 0.012691  # dense_weights[57]
-    .float 0.017818, 0.045685, -0.055961, 0.092845, 0.006361, 0.063510, 0.042458, -0.051005, 0.010128, -0.103371  # dense_weights[58]
-    .float 0.001035, 0.006601, 0.006450, -0.098689, -0.085623, 0.078018, 0.077414, -0.098693, 0.031466, -0.124141  # dense_weights[59]
-    .float 0.078633, -0.002293, 0.089828, 0.062475, 0.016341, 0.045665, -0.039071, -0.105527, 0.064868, -0.041933  # dense_weights[60]
-    .float -0.087038, -0.009776, -0.055263, 0.029485, -0.073875, -0.117743, 0.146928, -0.156855, 0.017735, -0.284489  # dense_weights[61]
-    .float 0.000159, 0.051626, -0.185317, -0.075726, 0.038573, -0.024523, 0.225804, -0.189320, -0.023447, -0.270328  # dense_weights[62]
-    .float 0.010947, 0.026946, -0.042038, -0.009531, -0.035824, 0.075031, 0.073343, -0.113266, -0.040366, -0.100663  # dense_weights[63]
-    .float -0.070461, 0.027912, 0.005818, -0.005304, -0.042986, 0.087548, -0.020619, -0.164383, -0.028951, -0.066500  # dense_weights[64]
-    .float -0.025728, -0.070156, -0.028421, -0.038778, -0.114430, 0.031514, 0.078115, -0.083569, -0.077286, -0.058811  # dense_weights[65]
-    .float 0.014420, 0.042257, -0.044464, 0.029971, -0.110241, 0.033959, 0.052505, -0.137927, -0.045729, -0.078263  # dense_weights[66]
-    .float -0.007460, -0.002733, -0.095498, -0.049729, -0.059116, 0.011528, 0.080232, -0.153943, 0.097984, -0.008241  # dense_weights[67]
-    .float -0.020967, -0.077744, 0.058145, -0.006435, -0.032675, -0.016817, 0.029741, -0.213453, 0.002108, -0.083931  # dense_weights[68]
-    .float -0.038535, -0.000780, -0.193986, -0.064259, 0.078388, 0.038528, 0.099026, -0.124457, 0.019976, -0.179152  # dense_weights[69]
-    .float -0.033463, 0.078602, -0.264859, -0.209787, 0.097254, 0.093981, 0.165633, -0.226568, 0.030531, -0.188365  # dense_weights[70]
-    .float 0.030160, -0.087710, 0.029794, 0.061809, -0.122600, 0.063178, 0.110320, -0.082733, -0.018136, -0.004473  # dense_weights[71]
-    .float -0.082881, -0.042464, -0.030626, 0.051890, -0.109957, 0.006111, -0.016077, -0.171429, -0.042698, -0.095135  # dense_weights[72]
-    .float -0.078900, -0.088396, -0.012248, -0.003013, -0.053957, 0.098891, 0.112283, -0.094671, -0.092985, -0.092987  # dense_weights[73]
-    .float 0.067180, 0.023808, 0.070515, 0.035218, -0.073557, 0.018046, 0.015572, -0.214070, 0.029434, -0.120490  # dense_weights[74]
-    .float 0.003838, -0.007858, -0.027892, -0.120585, 0.046726, -0.012981, 0.126571, -0.100669, 0.057141, -0.096604  # dense_weights[75]
-    .float -0.038989, 0.009725, 0.068333, 0.012452, -0.038782, 0.017728, 0.036875, -0.213544, 0.052986, -0.061604  # dense_weights[76]
-    .float -0.149735, -0.017332, -0.156810, -0.077128, 0.014799, -0.050851, 0.187220, -0.070137, -0.021990, -0.091081  # dense_weights[77]
-    .float -0.062945, 0.115274, -0.162944, -0.172827, 0.044270, -0.020631, 0.137804, -0.052780, -0.020298, -0.060079  # dense_weights[78]
-    .float 0.002971, -0.074847, -0.037061, -0.042535, -0.075248, 0.018844, 0.125184, -0.213092, 0.002538, -0.043168  # dense_weights[79]
-    .float -0.043733, -0.031855, 0.021139, 0.003060, -0.067072, -0.011612, 0.035302, -0.087404, 0.027342, -0.068432  # dense_weights[80]
-    .float 0.002975, -0.086547, -0.113216, -0.035760, -0.027975, 0.071829, 0.142131, -0.066075, -0.053472, -0.047622  # dense_weights[81]
-    .float 0.033259, 0.025731, 0.019875, -0.064380, 0.052723, -0.000602, 0.050093, -0.125915, 0.002756, -0.107877  # dense_weights[82]
-    .float -0.006064, 0.054875, 0.082332, -0.045644, 0.024492, 0.016569, 0.062075, -0.149738, -0.003430, -0.073718  # dense_weights[83]
-    .float -0.056918, -0.030568, 0.017794, 0.020497, 0.082646, 0.082744, 0.125294, -0.152360, 0.053132, -0.122708  # dense_weights[84]
-    .float -0.160900, -0.078962, -0.150204, -0.144652, -0.062136, 0.042073, 0.105245, -0.051772, -0.076261, -0.043995  # dense_weights[85]
-    .float 0.022370, 0.013791, -0.040892, -0.039043, 0.025121, 0.122123, 0.073654, -0.025733, -0.040336, -0.012922  # dense_weights[86]
-    .float -0.022470, 0.033507, -0.035606, -0.027528, 0.056206, -0.050037, 0.091281, -0.173332, 0.020733, -0.165828  # dense_weights[87]
-    .float -0.062955, -0.026793, -0.024726, -0.003858, -0.037476, 0.097935, 0.164629, -0.128812, -0.105706, -0.053818  # dense_weights[88]
-    .float -0.035841, -0.121690, -0.067689, -0.093389, -0.077013, 0.059266, 0.059942, -0.044620, 0.004491, -0.144186  # dense_weights[89]
-    .float -0.031197, -0.085982, -0.123237, -0.031828, -0.024884, 0.022066, 0.016644, -0.099466, -0.084597, -0.149535  # dense_weights[90]
-    .float -0.060716, -0.036009, -0.085370, -0.031096, 0.063001, 0.171307, 0.014233, -0.070559, -0.113721, -0.013559  # dense_weights[91]
-    .float -0.039992, -0.064180, 0.016581, 0.046592, -0.048130, 0.053295, 0.043400, -0.143769, 0.008160, -0.118109  # dense_weights[92]
-    .float -0.043524, 0.021302, -0.085163, -0.142242, -0.101986, 0.033888, 0.089395, -0.032922, 0.022701, 0.026554  # dense_weights[93]
-    .float -0.105758, 0.062224, -0.020305, 0.022496, -0.027700, 0.113981, -0.017915, 0.067447, -0.091744, -0.043221  # dense_weights[94]
-    .float -0.021558, 0.001111, -0.100569, -0.111441, 0.095251, 0.081649, 0.046969, -0.151803, 0.022982, -0.110065  # dense_weights[95]
-    .float -0.023736, 0.056106, 0.085898, 0.029239, 0.000123, 0.183024, -0.089884, 0.035491, -0.114803, -0.019725  # dense_weights[96]
-    .float -0.017185, 0.033221, 0.052694, 0.009335, 0.000982, -0.042362, -0.106398, -0.018914, -0.020156, -0.022524  # dense_weights[97]
-    .float -0.018250, -0.018043, 0.053272, 0.038068, -0.019460, -0.139867, -0.058035, 0.006341, -0.046633, -0.026596  # dense_weights[98]
-    .float -0.155619, 0.063549, -0.000396, 0.104935, -0.002319, 0.026332, 0.008569, -0.010355, -0.122698, 0.009645  # dense_weights[99]
-    .float -0.034662, 0.122772, 0.034892, 0.131586, -0.006795, -0.224939, -0.061062, 0.020927, 0.070391, -0.210541  # dense_weights[100]
-    .float 0.013362, 0.072545, -0.055487, 0.142447, -0.034469, -0.110391, 0.076623, 0.042395, -0.006148, -0.184982  # dense_weights[101]
-    .float -0.117581, 0.075990, -0.056640, 0.075425, -0.087488, -0.037957, -0.037355, 0.014915, -0.152615, -0.105689  # dense_weights[102]
-    .float -0.089429, 0.030976, 0.037877, 0.088266, 0.052317, -0.134317, -0.092016, 0.127821, -0.059004, -0.088698  # dense_weights[103]
-    .float -0.045006, -0.035291, 0.093119, 0.041305, -0.099780, 0.014691, 0.026083, -0.036966, -0.189495, -0.080613  # dense_weights[104]
-    .float -0.057135, 0.013303, 0.021212, 0.036280, 0.009916, 0.013225, -0.097956, -0.004673, -0.034228, -0.004226  # dense_weights[105]
-    .float 0.043363, 0.018738, 0.022232, 0.053714, 0.011278, -0.120142, -0.017069, 0.037100, 0.052114, -0.020101  # dense_weights[106]
-    .float 0.040154, 0.026590, -0.050279, 0.110760, -0.054683, 0.003056, -0.027921, 0.010320, -0.036402, -0.024927  # dense_weights[107]
-    .float 0.064201, -0.007013, -0.016944, 0.080287, 0.017417, -0.116968, -0.117495, 0.016162, 0.016998, -0.067258  # dense_weights[108]
-    .float 0.030945, 0.032762, -0.078464, 0.006092, 0.051668, -0.044726, 0.073584, 0.053840, -0.029480, -0.052941  # dense_weights[109]
-    .float 0.008677, -0.045545, 0.007802, 0.061227, 0.036644, -0.019570, 0.038163, 0.017360, -0.017214, -0.027096  # dense_weights[110]
-    .float 0.016832, 0.008694, -0.054642, -0.005652, -0.025711, -0.073519, 0.115135, 0.049044, 0.028779, -0.129239  # dense_weights[111]
-    .float -0.167404, 0.067011, -0.164962, 0.037878, -0.017589, -0.038701, 0.103554, 0.051466, -0.128701, -0.143578  # dense_weights[112]
-    .float -0.048499, -0.037097, -0.014116, 0.084297, -0.033299, -0.015841, -0.002160, -0.006551, -0.037754, 0.054114  # dense_weights[113]
-    .float -0.012917, -0.064499, 0.042014, 0.044227, -0.045620, 0.016837, 0.020364, -0.010908, 0.045039, 0.007622  # dense_weights[114]
-    .float -0.071887, -0.033979, -0.058441, -0.051788, 0.000788, 0.026009, -0.009070, 0.054378, -0.036420, -0.009035  # dense_weights[115]
-    .float -0.135248, -0.019890, 0.041683, 0.008857, 0.113119, -0.002906, -0.123793, 0.060004, 0.060837, 0.071670  # dense_weights[116]
-    .float -0.069983, -0.007103, 0.041959, 0.045204, 0.010481, -0.114021, -0.010133, 0.064424, -0.043432, -0.084357  # dense_weights[117]
-    .float 0.027886, -0.117719, -0.031260, -0.057208, -0.016619, 0.066293, 0.032093, 0.062354, 0.021870, 0.036478  # dense_weights[118]
-    .float -0.071885, 0.022671, 0.018674, -0.020985, 0.068621, -0.130310, 0.088078, 0.022305, -0.012151, -0.043396  # dense_weights[119]
-    .float -0.108913, 0.117190, -0.146400, 0.075281, 0.211836, 0.039777, 0.055050, 0.041470, -0.129177, -0.252038  # dense_weights[120]
-    .float 0.032753, -0.100677, 0.066144, 0.010053, -0.072031, 0.031582, -0.106482, -0.004035, -0.034276, -0.024279  # dense_weights[121]
-    .float 0.018752, -0.099473, 0.000657, 0.091501, -0.095307, -0.019457, -0.078663, 0.073073, -0.067015, 0.081108  # dense_weights[122]
-    .float -0.037666, -0.068292, 0.020958, 0.035429, -0.065396, -0.014430, 0.009954, -0.058456, 0.073492, 0.068956  # dense_weights[123]
-    .float 0.052737, -0.093633, -0.062477, 0.091093, -0.034912, -0.127229, -0.106393, 0.082885, 0.034651, 0.018108  # dense_weights[124]
-    .float -0.019425, 0.029650, 0.013674, 0.062907, 0.036809, -0.033396, -0.029716, 0.076533, -0.071037, -0.093383  # dense_weights[125]
-    .float -0.073349, -0.127070, -0.061572, 0.056608, 0.020644, -0.010099, 0.084173, 0.051734, 0.039836, 0.011869  # dense_weights[126]
-    .float -0.015169, -0.043164, 0.059619, 0.067769, -0.063751, -0.039657, -0.024477, 0.108606, 0.067830, 0.030363  # dense_weights[127]
-    .float 0.008676, 0.204645, -0.159711, 0.003438, 0.233725, -0.054297, 0.036058, 0.011786, -0.172541, -0.274032  # dense_weights[128]
-    .float 0.009972, 0.006470, -0.027857, -0.019870, -0.089424, 0.055009, -0.028204, -0.031583, 0.023617, -0.010024  # dense_weights[129]
-    .float 0.012502, -0.057352, -0.075580, 0.041417, -0.000730, 0.059388, -0.077427, 0.086304, 0.011417, -0.032527  # dense_weights[130]
-    .float -0.046638, -0.026742, 0.016282, 0.008462, -0.001110, -0.026820, 0.016201, -0.069575, 0.056042, 0.053463  # dense_weights[131]
-    .float 0.016181, -0.164212, 0.041141, 0.096134, 0.008679, -0.028716, -0.101539, 0.074949, -0.035884, -0.027433  # dense_weights[132]
-    .float -0.098587, 0.003299, 0.021696, 0.089082, 0.012629, -0.023519, -0.089711, 0.047876, 0.051001, -0.234372  # dense_weights[133]
-    .float 0.023752, 0.059204, -0.136539, -0.073923, 0.020321, 0.107815, 0.150007, -0.005679, 0.049946, -0.032780  # dense_weights[134]
-    .float -0.079556, -0.108772, 0.035838, 0.019442, 0.012757, -0.004852, 0.059616, -0.018093, -0.099600, 0.062132  # dense_weights[135]
-    .float 0.030750, 0.070181, -0.021342, 0.025800, 0.176311, -0.119955, -0.036346, -0.002847, -0.139379, -0.046335  # dense_weights[136]
-    .float 0.006545, 0.030830, 0.022122, 0.118678, -0.019350, 0.078490, -0.016868, 0.021073, 0.026240, -0.032995  # dense_weights[137]
-    .float -0.035114, -0.137557, 0.016098, 0.104520, -0.048038, 0.042209, -0.118376, 0.083898, -0.003074, 0.101680  # dense_weights[138]
-    .float 0.001425, -0.018320, -0.107638, 0.023547, -0.071222, 0.056422, 0.014049, -0.011458, 0.089842, -0.054104  # dense_weights[139]
-    .float -0.097118, -0.138324, -0.000428, 0.038947, -0.172560, -0.015142, -0.077102, -0.016479, -0.013434, 0.071830  # dense_weights[140]
-    .float -0.059689, -0.046909, 0.039095, 0.149826, 0.009366, -0.138522, -0.138365, -0.108733, 0.020094, -0.165934  # dense_weights[141]
-    .float 0.007721, 0.118772, -0.144671, -0.089499, 0.135990, -0.062809, 0.129307, -0.043854, 0.077179, -0.082456  # dense_weights[142]
-    .float -0.007445, 0.009415, -0.031260, 0.025822, -0.098834, -0.025472, -0.000170, -0.014371, 0.019776, -0.044531  # dense_weights[143]
-    .float 0.095407, 0.079804, -0.069748, 0.041856, 0.040284, -0.176392, -0.045393, -0.123225, -0.082889, 0.047276  # dense_weights[144]
-    .float -0.020001, -0.066126, -0.047870, 0.081074, -0.012927, 0.039454, -0.061688, 0.078775, 0.082465, 0.059075  # dense_weights[145]
-    .float -0.045605, -0.124761, -0.044712, 0.060761, -0.044232, 0.059890, -0.132264, 0.059762, 0.024685, 0.005173  # dense_weights[146]
-    .float -0.036296, 0.016711, -0.103089, -0.092568, -0.105545, 0.025854, 0.090222, -0.121748, 0.022856, -0.054951  # dense_weights[147]
-    .float -0.074245, -0.100124, 0.030715, 0.036176, -0.077420, 0.062097, -0.029321, 0.016161, 0.002874, -0.001685  # dense_weights[148]
-    .float -0.050673, -0.139876, 0.124524, 0.142020, 0.007756, -0.027270, -0.102880, -0.107108, 0.016287, -0.019220  # dense_weights[149]
-    .float 0.035856, 0.098406, -0.190850, -0.115640, 0.105096, -0.028706, 0.172135, -0.252318, -0.002035, -0.119596  # dense_weights[150]
-    .float 0.003817, 0.011911, -0.062785, 0.030051, -0.055387, -0.036012, -0.026022, -0.021964, -0.013966, 0.057846  # dense_weights[151]
-    .float 0.024943, 0.125746, 0.018685, 0.008777, 0.001340, -0.145511, -0.075637, 0.003048, -0.014615, 0.046146  # dense_weights[152]
-    .float 0.024017, -0.010129, -0.049003, 0.042579, -0.040403, 0.113789, -0.084204, 0.037728, 0.097657, 0.015954  # dense_weights[153]
-    .float 0.046613, -0.072648, 0.017953, -0.045481, -0.096062, 0.041056, -0.002933, 0.003488, 0.063229, 0.015174  # dense_weights[154]
-    .float -0.018546, -0.025989, -0.064804, -0.127643, -0.026119, 0.032495, 0.086716, -0.031903, 0.036683, 0.042313  # dense_weights[155]
-    .float 0.027697, -0.064549, 0.035737, 0.027802, -0.064571, -0.018607, -0.013212, 0.013780, -0.031066, 0.094220  # dense_weights[156]
-    .float -0.041875, -0.156833, 0.053457, 0.013393, -0.041451, -0.046793, -0.037141, -0.038916, 0.022874, 0.011317  # dense_weights[157]
-    .float -0.091511, 0.207348, -0.285654, -0.263545, 0.344415, -0.067827, 0.226594, -0.187490, 0.024566, -0.146726  # dense_weights[158]
-    .float 0.015757, 0.021862, -0.001008, 0.084803, -0.090674, 0.058852, 0.010394, -0.083545, -0.006235, 0.035015  # dense_weights[159]
-    .float 0.023801, 0.034183, -0.018921, -0.001158, 0.007331, -0.064893, -0.118979, 0.000987, 0.040067, 0.011421  # dense_weights[160]
-    .float 0.019875, -0.079114, 0.017357, 0.031330, -0.083166, 0.136190, -0.120068, -0.050454, 0.003316, -0.017222  # dense_weights[161]
-    .float -0.022778, -0.061180, 0.043921, -0.069372, -0.096567, 0.059679, -0.038855, -0.023209, -0.024451, -0.015628  # dense_weights[162]
-    .float -0.066829, -0.020888, -0.113772, -0.145439, 0.072645, 0.134591, 0.028735, 0.048382, -0.009103, 0.063753  # dense_weights[163]
-    .float 0.022110, -0.038772, 0.011999, -0.015567, -0.131235, 0.097326, 0.055530, -0.014828, 0.078968, -0.008856  # dense_weights[164]
-    .float -0.057533, -0.177519, 0.035716, -0.071082, -0.007908, 0.061735, -0.015007, -0.152092, 0.046591, 0.000691  # dense_weights[165]
-    .float -0.096536, 0.281279, -0.411483, -0.287590, 0.262520, -0.048950, 0.172098, -0.216838, -0.086079, -0.098228  # dense_weights[166]
-    .float -0.031578, 0.035236, -0.021569, 0.090987, -0.026007, 0.054071, -0.029854, 0.067399, -0.010846, 0.002340  # dense_weights[167]
-    .float -0.036071, 0.058392, 0.005838, 0.078052, -0.031143, 0.070279, -0.062205, -0.057336, -0.001467, -0.022767  # dense_weights[168]
-    .float 0.060407, -0.047103, 0.059943, -0.009131, -0.063697, 0.082344, 0.000736, -0.003223, 0.048332, -0.056004  # dense_weights[169]
-    .float 0.068712, 0.052099, -0.038737, -0.063863, -0.022822, -0.012748, -0.078125, 0.048613, 0.072245, -0.003160  # dense_weights[170]
-    .float -0.103480, 0.003670, -0.226509, -0.215224, 0.035349, 0.180355, -0.045677, 0.016395, 0.044907, -0.101442  # dense_weights[171]
-    .float 0.100525, 0.004621, -0.039420, -0.000950, -0.013798, -0.000159, 0.022440, 0.003398, 0.044963, -0.003619  # dense_weights[172]
-    .float -0.048246, -0.118354, -0.051534, -0.066472, 0.045318, 0.115917, 0.066151, -0.121165, 0.056645, -0.082868  # dense_weights[173]
-    .float -0.006972, 0.215512, -0.280180, -0.185308, 0.181018, 0.046845, -0.052539, -0.051485, -0.076972, -0.108344  # dense_weights[174]
-    .float 0.010850, -0.046801, -0.041327, -0.029303, -0.076578, 0.047709, 0.044969, -0.063583, 0.024181, 0.027950  # dense_weights[175]
-    .float 0.080678, 0.054519, 0.123213, -0.044672, -0.041479, -0.078466, -0.079365, -0.012495, -0.024240, -0.026958  # dense_weights[176]
-    .float 0.075637, 0.008303, 0.062097, -0.088270, -0.029747, -0.055407, -0.040286, -0.100323, 0.070095, -0.081135  # dense_weights[177]
-    .float 0.005574, -0.003418, -0.045079, -0.001881, -0.024370, 0.002801, -0.072420, -0.089728, -0.032175, -0.053488  # dense_weights[178]
-    .float -0.112257, 0.066707, -0.132958, -0.077474, 0.014558, 0.117871, 0.029312, -0.032723, -0.037523, -0.071687  # dense_weights[179]
-    .float 0.056761, -0.071299, -0.021827, 0.024532, 0.070057, 0.059255, 0.066495, -0.096513, 0.060072, -0.057382  # dense_weights[180]
-    .float -0.086340, -0.169191, -0.170621, -0.183736, 0.104371, 0.152889, 0.113330, -0.210907, 0.029246, -0.285766  # dense_weights[181]
-    .float -0.181400, 0.094073, -0.131970, -0.147849, 0.246798, 0.133309, -0.041912, 0.015606, -0.100690, -0.166921  # dense_weights[182]
-    .float -0.006550, -0.034192, 0.088739, 0.001301, -0.056665, -0.040956, 0.073509, -0.082634, 0.039647, -0.043994  # dense_weights[183]
-    .float 0.119026, -0.058442, -0.074885, -0.036568, -0.035869, -0.000051, 0.078020, -0.140178, -0.061585, -0.013725  # dense_weights[184]
-    .float -0.026977, -0.118987, -0.004898, 0.065680, -0.028729, 0.001286, -0.018270, -0.196245, -0.040675, -0.055505  # dense_weights[185]
-    .float 0.099989, -0.099838, -0.017114, -0.054479, 0.030279, 0.026690, 0.034026, -0.167482, 0.055278, -0.044688  # dense_weights[186]
-    .float -0.234934, -0.085150, -0.117597, -0.148662, -0.031557, 0.204706, -0.115439, -0.048043, 0.074780, -0.094190  # dense_weights[187]
-    .float -0.041098, -0.019277, 0.025559, -0.093464, -0.003137, 0.077086, 0.141049, -0.022153, -0.029229, -0.048724  # dense_weights[188]
-    .float -0.112016, -0.037408, -0.215637, -0.171725, 0.104368, 0.249510, 0.057376, -0.181091, 0.041435, -0.208097  # dense_weights[189]
-    .float -0.205486, -0.070093, 0.080184, -0.089640, 0.001483, 0.189331, -0.108490, 0.055264, -0.010235, -0.024511  # dense_weights[190]
-    .float -0.007992, -0.004833, -0.049210, -0.017789, 0.014039, -0.030828, 0.072112, -0.061792, 0.071628, -0.114498  # dense_weights[191]
-    .float -0.122013, -0.004756, 0.024665, -0.010215, -0.086003, 0.168381, -0.111702, 0.047570, -0.101555, -0.091131  # dense_weights[192]
-    .float -0.103230, -0.104103, 0.031081, 0.021398, -0.056162, -0.070671, 0.007228, 0.089680, -0.061106, -0.058364  # dense_weights[193]
-    .float -0.003467, -0.109153, 0.002662, 0.061949, -0.117494, -0.210681, -0.087345, -0.004540, -0.060690, -0.059637  # dense_weights[194]
-    .float -0.010649, 0.033678, -0.039881, 0.051049, -0.019454, -0.135883, 0.011914, 0.004349, -0.001381, -0.137735  # dense_weights[195]
-    .float -0.047598, -0.038445, -0.096788, 0.115433, 0.023047, -0.256048, -0.017625, 0.005391, 0.096527, -0.118866  # dense_weights[196]
-    .float -0.052429, 0.052589, 0.001623, -0.000940, -0.017008, -0.109175, 0.005170, 0.088905, 0.035976, -0.044058  # dense_weights[197]
-    .float 0.002827, 0.006098, -0.010224, 0.063484, 0.019486, -0.048838, 0.000209, 0.007971, -0.048124, -0.017199  # dense_weights[198]
-    .float -0.081395, 0.008071, -0.016797, 0.014481, 0.047185, -0.203838, -0.012859, 0.016139, 0.001527, -0.136964  # dense_weights[199]
-    .float -0.170486, -0.011666, 0.052234, -0.007564, -0.025027, 0.060990, 0.009919, 0.145310, -0.213568, -0.224179  # dense_weights[200]
-    .float -0.082670, -0.020979, 0.064096, -0.013021, -0.004997, -0.037259, -0.010257, -0.009875, 0.019255, 0.020874  # dense_weights[201]
-    .float -0.016190, -0.155044, 0.081616, 0.034866, -0.115853, -0.098001, -0.100093, -0.002104, 0.069089, 0.045462  # dense_weights[202]
-    .float 0.034115, -0.024817, 0.049391, -0.027945, -0.033508, -0.115527, -0.030817, 0.044088, 0.009536, 0.005094  # dense_weights[203]
-    .float -0.003351, 0.013562, 0.045804, 0.178893, -0.114245, -0.135916, -0.199201, 0.016464, 0.024154, -0.006036  # dense_weights[204]
-    .float -0.047454, -0.008061, 0.037504, -0.018263, 0.053795, -0.097929, -0.033752, -0.010971, -0.031723, 0.006866  # dense_weights[205]
-    .float -0.080076, -0.030094, 0.033236, 0.044173, -0.101366, -0.011099, -0.056266, -0.029029, 0.038819, 0.016417  # dense_weights[206]
-    .float -0.018018, 0.019250, 0.034181, 0.065375, 0.003162, -0.109392, -0.019816, -0.024664, -0.044772, -0.019525  # dense_weights[207]
-    .float -0.135839, 0.056151, -0.013001, -0.058110, 0.104703, 0.002552, 0.108816, 0.241182, -0.236770, -0.424230  # dense_weights[208]
-    .float -0.039785, -0.061188, -0.049822, -0.016329, -0.032535, -0.044849, -0.003563, -0.012161, -0.070822, 0.047518  # dense_weights[209]
-    .float 0.024003, -0.014222, -0.015578, 0.111674, -0.015058, -0.066325, -0.106611, 0.077698, -0.079038, -0.023612  # dense_weights[210]
-    .float 0.022990, -0.024647, 0.014315, 0.035770, -0.119623, 0.012058, -0.042362, -0.005183, -0.024789, -0.001094  # dense_weights[211]
-    .float -0.031540, -0.024383, -0.000743, 0.213109, -0.110972, -0.122934, -0.091220, 0.092147, -0.079045, -0.007470  # dense_weights[212]
-    .float -0.077595, -0.039845, -0.014554, -0.022872, 0.038172, -0.081047, -0.036498, 0.040678, -0.028010, -0.129195  # dense_weights[213]
-    .float -0.047186, -0.023883, -0.028664, 0.021039, -0.055118, 0.012998, 0.053704, 0.009017, 0.018880, -0.000825  # dense_weights[214]
-    .float -0.063237, -0.028699, -0.022650, 0.001936, -0.060496, -0.108552, 0.002532, 0.101756, 0.009191, -0.027469  # dense_weights[215]
-    .float -0.064900, 0.092814, -0.236394, -0.174845, 0.169760, 0.163296, 0.009225, 0.250895, -0.130572, -0.490092  # dense_weights[216]
-    .float 0.014501, -0.038878, -0.008726, -0.014356, -0.062844, -0.037844, 0.014831, 0.121374, 0.028272, 0.005101  # dense_weights[217]
-    .float 0.019369, -0.083516, 0.024839, 0.071488, -0.044889, 0.011176, -0.033586, 0.016524, -0.091617, 0.016853  # dense_weights[218]
-    .float 0.066578, 0.004767, 0.039333, 0.038017, -0.135577, -0.025966, 0.041253, -0.039941, 0.043631, 0.068974  # dense_weights[219]
-    .float -0.014454, -0.046665, 0.043453, 0.190563, -0.028694, -0.086138, -0.070834, 0.011211, 0.081647, 0.026568  # dense_weights[220]
-    .float -0.091625, 0.011478, -0.000221, 0.077303, 0.044658, -0.108712, -0.082257, 0.057688, 0.013438, -0.079794  # dense_weights[221]
-    .float -0.000696, -0.060668, 0.066397, -0.034669, 0.059522, 0.062994, 0.052000, -0.022070, 0.034531, 0.001690  # dense_weights[222]
-    .float 0.046642, -0.055680, -0.053547, 0.062058, -0.019312, -0.036036, -0.072690, -0.011352, -0.024928, 0.032446  # dense_weights[223]
-    .float -0.088354, 0.123311, -0.098640, -0.095516, 0.346760, 0.109027, 0.099087, 0.127489, -0.054776, -0.550025  # dense_weights[224]
-    .float -0.047162, -0.069512, 0.044791, -0.000700, -0.139233, 0.071678, -0.117626, 0.019511, 0.015757, 0.032261  # dense_weights[225]
-    .float 0.002316, -0.090659, -0.009903, 0.103681, -0.139310, 0.016730, -0.114693, 0.044908, -0.063003, 0.061192  # dense_weights[226]
-    .float -0.024641, -0.034160, -0.084981, 0.053215, -0.055159, -0.077260, 0.090816, -0.040330, 0.046109, 0.060534  # dense_weights[227]
-    .float -0.085791, -0.136354, 0.069240, 0.093165, -0.037793, -0.081096, -0.118912, -0.007948, 0.071873, -0.026101  # dense_weights[228]
-    .float -0.054869, -0.104179, 0.032616, 0.082584, -0.032641, -0.084550, -0.084776, 0.045249, 0.016936, -0.049776  # dense_weights[229]
-    .float -0.014043, 0.001508, -0.067796, -0.113976, 0.101223, 0.031658, 0.163366, -0.088504, 0.105311, -0.001297  # dense_weights[230]
-    .float 0.028768, -0.046883, -0.031847, -0.068058, -0.029425, 0.061190, 0.008259, -0.020144, 0.076483, -0.085500  # dense_weights[231]
-    .float -0.017533, 0.138023, 0.033376, -0.007552, 0.290175, -0.088737, -0.030272, 0.074643, -0.033238, -0.288031  # dense_weights[232]
-    .float 0.047981, 0.044001, 0.053259, -0.004539, -0.205414, -0.022169, -0.108270, 0.053176, -0.066549, 0.037708  # dense_weights[233]
-    .float -0.075367, -0.045330, 0.088345, 0.076947, -0.084214, -0.002871, -0.004016, 0.097735, 0.025495, 0.046454  # dense_weights[234]
-    .float -0.013706, -0.126425, -0.018524, 0.045911, -0.028886, -0.061646, 0.103943, -0.031984, -0.010906, 0.134879  # dense_weights[235]
-    .float -0.028277, -0.072821, 0.036830, 0.028771, -0.089927, -0.031988, -0.161971, 0.050339, 0.031735, 0.015962  # dense_weights[236]
-    .float -0.042400, -0.056435, 0.076367, 0.050327, -0.159019, -0.078580, -0.228118, 0.047379, 0.028476, 0.044969  # dense_weights[237]
-    .float -0.075847, 0.042778, -0.084009, -0.166953, 0.174840, 0.083175, 0.132240, -0.197939, -0.037323, -0.019415  # dense_weights[238]
-    .float -0.021842, 0.056239, 0.069070, -0.001240, -0.005672, 0.073953, 0.003654, 0.016937, -0.012765, 0.043095  # dense_weights[239]
-    .float 0.069858, 0.157012, 0.079207, 0.102262, 0.187741, -0.315889, -0.149444, -0.039166, -0.076889, -0.081069  # dense_weights[240]
-    .float 0.105185, 0.019872, 0.040988, 0.045880, -0.175722, -0.023833, -0.152322, 0.102872, -0.070441, 0.009178  # dense_weights[241]
-    .float 0.031785, 0.003831, 0.075290, 0.044766, -0.135272, -0.012995, -0.103714, 0.094630, -0.035736, -0.017585  # dense_weights[242]
-    .float -0.104831, -0.054534, 0.010608, 0.165065, -0.010202, -0.127812, 0.043911, -0.057840, -0.007452, 0.051272  # dense_weights[243]
-    .float 0.031462, -0.108229, -0.017092, -0.026112, -0.093521, -0.095205, -0.128042, 0.070438, 0.112909, 0.012607  # dense_weights[244]
-    .float -0.008553, -0.108878, 0.143990, 0.173216, -0.213345, -0.080867, -0.200601, -0.046470, 0.070061, 0.095857  # dense_weights[245]
-    .float 0.016502, 0.124763, -0.128405, -0.163152, 0.350611, -0.054458, 0.203596, -0.267426, -0.046161, -0.085445  # dense_weights[246]
-    .float 0.058330, 0.120862, -0.021280, -0.065104, -0.077252, 0.035435, 0.001990, 0.003418, 0.014419, 0.027360  # dense_weights[247]
-    .float 0.111970, 0.039346, 0.070497, 0.048805, 0.178573, -0.215356, -0.257953, -0.075123, 0.024090, -0.040530  # dense_weights[248]
-    .float -0.014987, -0.119303, 0.017259, 0.001061, -0.089277, 0.098320, -0.100286, 0.104466, 0.007444, 0.113373  # dense_weights[249]
-    .float 0.068698, -0.086084, -0.031917, -0.025444, -0.193904, 0.132051, -0.031373, 0.039090, -0.011399, 0.105292  # dense_weights[250]
-    .float -0.106670, -0.009735, -0.144970, 0.034265, 0.101296, -0.123780, -0.025720, -0.009589, 0.043587, 0.009231  # dense_weights[251]
-    .float 0.045010, -0.008388, 0.042456, -0.032964, -0.137765, -0.018447, -0.127901, -0.032086, -0.003741, -0.063499  # dense_weights[252]
-    .float 0.024747, -0.205106, 0.115744, 0.058166, -0.246144, 0.110214, -0.056481, -0.037174, 0.010203, 0.112390  # dense_weights[253]
-    .float -0.027414, 0.229366, -0.294381, -0.142212, 0.386533, -0.048537, 0.037342, -0.150139, -0.192075, -0.264928  # dense_weights[254]
-    .float -0.040654, -0.016803, -0.024055, 0.068320, 0.012225, -0.099027, -0.007614, -0.002849, -0.071947, 0.048451  # dense_weights[255]
-    .float 0.131565, 0.003480, 0.095021, 0.031384, 0.054928, -0.088499, -0.300637, 0.047396, 0.091044, 0.027356  # dense_weights[256]
-    .float -0.000286, -0.079341, -0.047664, 0.034178, -0.047770, 0.028434, -0.112611, 0.047769, 0.005786, -0.026976  # dense_weights[257]
-    .float 0.018109, -0.094319, -0.179820, -0.076842, -0.066365, 0.233986, 0.038776, 0.016456, 0.025917, -0.014200  # dense_weights[258]
-    .float -0.111074, 0.063618, -0.142278, -0.041228, 0.062978, -0.007054, -0.043871, 0.108688, 0.044883, -0.087971  # dense_weights[259]
-    .float 0.055804, -0.108142, 0.051147, -0.086063, -0.073760, 0.028192, -0.072184, 0.001922, 0.027568, -0.024474  # dense_weights[260]
-    .float 0.003701, -0.296115, 0.095207, 0.008197, -0.166288, 0.121246, -0.003051, -0.049456, 0.057971, 0.049087  # dense_weights[261]
-    .float -0.212465, 0.362834, -0.429814, -0.094119, 0.412635, -0.083200, -0.033245, -0.062285, -0.059626, -0.364109  # dense_weights[262]
-    .float -0.001792, 0.029560, 0.023753, -0.039724, -0.032410, 0.023856, -0.153587, -0.001727, 0.049056, 0.048211  # dense_weights[263]
-    .float 0.060735, 0.033946, 0.068913, 0.021356, -0.084562, -0.120133, -0.183921, 0.070418, 0.084797, -0.002922  # dense_weights[264]
-    .float 0.008206, -0.064331, -0.087885, -0.005298, -0.019859, 0.087132, 0.014209, 0.045038, 0.022460, -0.037678  # dense_weights[265]
-    .float -0.048701, -0.082371, -0.160586, -0.083985, -0.104188, 0.184263, 0.009279, -0.007181, -0.017217, 0.052337  # dense_weights[266]
-    .float -0.197388, 0.033637, -0.085711, -0.096009, 0.155987, 0.159217, -0.046445, -0.007949, -0.061829, -0.243938  # dense_weights[267]
-    .float 0.044279, -0.060463, -0.011613, -0.076602, 0.021427, 0.080041, -0.000456, -0.047078, 0.005891, -0.021224  # dense_weights[268]
-    .float 0.045229, -0.203501, -0.023340, -0.128457, -0.197750, 0.126352, 0.014076, -0.071462, 0.031508, 0.079540  # dense_weights[269]
-    .float -0.069603, 0.195485, -0.265554, -0.159891, 0.296743, 0.037636, -0.081103, 0.079381, -0.239695, -0.390898  # dense_weights[270]
-    .float 0.087931, -0.038223, -0.019228, 0.070890, -0.050599, -0.049063, -0.056547, 0.019603, 0.057967, 0.055095  # dense_weights[271]
-    .float 0.118300, -0.054038, 0.094070, 0.017138, -0.116973, -0.153518, -0.101868, -0.065058, 0.019051, 0.020707  # dense_weights[272]
-    .float 0.044681, -0.118841, -0.109212, -0.085157, -0.014049, 0.119505, -0.044546, -0.019661, -0.013776, 0.017429  # dense_weights[273]
-    .float -0.050066, -0.109055, -0.095067, -0.125040, -0.073068, 0.145189, -0.031592, -0.004783, 0.074204, 0.010341  # dense_weights[274]
-    .float -0.184203, -0.092370, -0.209640, -0.221051, 0.195778, 0.265205, -0.098726, 0.019460, -0.015722, -0.270856  # dense_weights[275]
-    .float 0.022492, -0.043589, -0.028040, 0.009190, -0.006577, 0.048917, -0.053436, -0.112204, 0.044039, -0.016589  # dense_weights[276]
-    .float -0.052216, -0.106342, -0.180862, -0.253655, 0.055552, 0.092100, 0.136256, -0.130949, 0.131514, -0.024495  # dense_weights[277]
-    .float -0.238676, 0.027653, -0.059434, 0.024809, 0.183899, 0.165176, -0.241034, 0.112617, -0.000315, -0.299322  # dense_weights[278]
-    .float 0.077007, -0.025658, 0.016026, -0.023752, 0.035955, -0.086154, -0.013513, -0.019351, 0.017986, -0.027412  # dense_weights[279]
-    .float 0.063122, -0.025773, 0.000463, 0.087938, -0.029790, 0.023720, -0.000696, -0.020057, 0.043820, 0.003016  # dense_weights[280]
-    .float 0.020832, -0.044294, -0.025102, -0.110701, -0.038738, 0.039866, -0.015507, -0.110957, -0.041866, -0.074319  # dense_weights[281]
-    .float -0.039525, -0.093348, -0.094590, -0.112903, -0.086180, 0.145106, -0.122713, -0.105258, 0.010135, -0.000092  # dense_weights[282]
-    .float -0.318891, -0.128402, -0.130035, -0.206523, 0.064517, 0.369281, -0.176619, -0.087420, -0.012734, -0.117159  # dense_weights[283]
-    .float -0.002226, -0.123960, -0.009529, -0.090547, 0.079178, 0.055995, 0.019329, -0.042873, -0.000276, -0.097023  # dense_weights[284]
-    .float -0.080382, -0.082720, -0.296776, -0.104646, 0.082761, 0.139428, 0.106323, -0.170903, -0.041525, -0.127512  # dense_weights[285]
-    .float -0.131351, 0.070786, 0.035776, -0.010734, -0.050349, 0.196230, -0.212116, 0.044739, -0.017740, -0.078656  # dense_weights[286]
-    .float -0.012262, -0.025369, -0.091158, -0.015251, -0.042283, 0.057469, 0.024357, -0.117102, -0.016472, -0.009209  # dense_weights[287]
-    .float -0.067327, -0.022791, 0.051361, -0.025152, -0.059121, 0.189857, -0.010312, 0.171412, -0.147604, -0.083759  # dense_weights[288]
-    .float -0.079078, -0.090495, -0.001114, 0.001692, -0.106070, -0.089757, -0.061197, 0.047220, -0.070953, 0.022414  # dense_weights[289]
-    .float -0.004795, -0.127304, 0.030026, 0.142766, -0.142378, -0.182286, -0.118346, 0.018565, -0.080978, -0.106740  # dense_weights[290]
-    .float -0.128839, 0.018492, 0.029042, -0.001911, -0.034436, -0.038209, -0.072586, 0.065711, 0.003830, -0.028254  # dense_weights[291]
-    .float -0.109882, -0.140159, 0.090862, 0.102027, -0.166687, -0.141897, -0.224888, 0.073988, 0.055871, -0.037110  # dense_weights[292]
-    .float -0.015575, -0.046788, 0.040476, 0.101383, 0.022195, -0.164349, -0.103857, -0.026806, -0.022771, -0.051558  # dense_weights[293]
-    .float -0.060513, -0.087471, -0.005882, 0.073829, -0.105254, 0.027204, -0.026602, -0.034942, -0.046673, 0.006094  # dense_weights[294]
-    .float -0.081714, -0.107154, 0.062679, 0.041327, -0.082881, -0.176754, -0.133163, 0.087905, 0.017378, -0.116834  # dense_weights[295]
-    .float -0.140823, -0.008846, 0.035299, 0.001656, -0.092100, 0.097959, 0.080996, 0.097722, -0.159567, -0.168572  # dense_weights[296]
-    .float 0.057317, -0.001516, 0.036251, 0.023795, -0.106647, -0.057127, 0.000209, -0.051982, -0.064118, 0.099603  # dense_weights[297]
-    .float -0.039226, -0.147819, 0.012023, 0.062907, -0.084609, -0.037923, -0.072637, 0.028189, -0.023461, -0.004258  # dense_weights[298]
-    .float 0.010187, -0.023541, 0.024143, -0.021157, -0.051097, -0.011636, -0.018016, -0.081956, 0.070390, 0.061257  # dense_weights[299]
-    .float -0.047164, -0.071721, 0.169627, 0.126515, -0.153154, -0.246410, -0.175213, 0.005360, -0.032078, -0.042952  # dense_weights[300]
-    .float -0.013743, -0.098740, 0.019190, 0.031343, -0.098092, -0.074531, -0.058039, 0.087358, -0.012628, -0.037953  # dense_weights[301]
-    .float -0.017892, -0.107379, 0.005432, 0.030854, -0.134916, -0.019955, -0.007129, -0.047469, 0.031305, 0.028762  # dense_weights[302]
-    .float -0.096071, -0.024820, 0.047342, 0.012708, 0.061779, -0.017342, 0.003336, -0.003865, -0.038836, -0.023999  # dense_weights[303]
-    .float -0.147173, 0.103067, -0.135540, -0.314679, 0.183249, 0.084577, 0.014663, 0.214500, -0.048167, -0.328066  # dense_weights[304]
-    .float 0.002035, -0.029179, -0.058309, 0.019585, 0.007762, -0.089630, 0.010473, -0.019249, -0.076705, 0.057776  # dense_weights[305]
-    .float -0.079152, 0.002980, 0.033967, 0.149130, -0.064292, -0.054308, -0.050745, 0.079330, 0.017642, -0.033451  # dense_weights[306]
-    .float 0.003248, 0.031013, -0.051783, 0.069489, -0.069908, -0.040148, -0.039507, -0.088787, 0.051912, -0.002089  # dense_weights[307]
-    .float -0.143640, -0.055413, 0.072147, 0.181353, -0.053402, -0.061426, -0.125981, -0.022479, 0.045971, -0.127223  # dense_weights[308]
-    .float -0.055442, -0.095224, -0.034699, 0.020541, -0.012140, -0.012073, -0.001565, 0.025370, 0.081475, 0.018741  # dense_weights[309]
-    .float -0.043455, -0.094252, -0.029148, -0.075277, -0.002861, 0.039582, 0.077805, -0.059161, 0.037989, 0.102494  # dense_weights[310]
-    .float -0.021645, -0.137390, -0.060078, -0.053464, 0.039323, 0.020122, -0.072600, -0.048928, 0.031450, 0.021897  # dense_weights[311]
-    .float -0.111963, -0.019709, -0.205518, -0.455474, 0.278540, 0.150376, 0.159052, 0.224372, 0.155236, -0.220077  # dense_weights[312]
-    .float 0.021813, 0.057792, -0.031698, 0.044433, -0.015719, 0.046530, -0.032094, 0.062238, -0.065903, -0.054823  # dense_weights[313]
-    .float 0.036644, 0.034112, 0.088802, 0.061777, 0.032097, -0.075776, -0.092866, 0.111333, -0.040954, 0.006688  # dense_weights[314]
-    .float -0.037534, 0.044738, 0.007764, 0.061892, 0.002060, -0.032181, 0.074788, -0.033129, -0.005818, 0.101745  # dense_weights[315]
-    .float -0.115895, -0.107318, 0.020802, 0.161605, -0.009757, -0.073854, -0.075654, 0.024995, 0.162598, 0.113772  # dense_weights[316]
-    .float -0.091291, 0.062472, -0.012817, 0.038121, -0.095349, 0.017831, -0.068333, 0.140290, -0.024746, 0.015903  # dense_weights[317]
-    .float -0.017718, -0.029273, -0.041499, -0.063916, 0.062381, 0.044234, 0.117062, -0.033458, 0.036971, 0.077486  # dense_weights[318]
-    .float 0.044483, 0.005400, -0.103339, -0.057935, -0.039765, 0.044446, -0.027757, 0.111355, 0.065736, -0.066917  # dense_weights[319]
-    .float -0.006647, -0.057122, -0.182809, -0.553702, 0.394644, 0.254770, 0.080073, 0.087690, 0.071915, -0.123105  # dense_weights[320]
-    .float 0.021328, -0.008088, 0.016549, 0.089916, -0.011801, 0.017561, -0.003448, 0.025614, -0.025321, -0.070584  # dense_weights[321]
-    .float -0.036203, -0.000953, 0.093382, 0.086990, 0.003423, -0.091367, -0.064653, 0.085884, 0.001396, 0.009657  # dense_weights[322]
-    .float 0.002852, -0.030307, -0.095320, 0.036793, 0.015631, -0.086000, 0.022324, -0.036417, -0.081100, 0.125525  # dense_weights[323]
-    .float -0.134657, -0.135019, -0.002367, -0.017895, -0.053309, -0.039015, -0.041926, 0.030572, 0.112627, 0.149941  # dense_weights[324]
-    .float -0.028961, -0.042604, 0.020786, 0.040798, -0.095456, -0.074288, -0.157366, 0.163661, 0.049183, -0.074052  # dense_weights[325]
-    .float -0.014742, -0.099710, -0.124114, -0.148389, 0.165888, -0.027342, 0.070619, -0.132971, -0.022607, 0.149625  # dense_weights[326]
-    .float -0.038146, -0.052698, -0.100446, -0.113605, 0.055272, 0.037222, 0.070858, 0.070234, 0.021787, 0.074830  # dense_weights[327]
-    .float -0.007519, 0.074961, -0.005477, -0.430004, 0.262522, 0.168237, 0.030818, 0.020056, 0.059342, -0.184140  # dense_weights[328]
-    .float -0.069014, 0.073107, -0.027425, 0.081401, -0.145781, -0.069193, -0.123155, 0.141654, -0.044528, -0.000782  # dense_weights[329]
-    .float -0.016324, 0.040450, 0.043390, 0.133953, -0.160269, -0.046164, -0.038194, 0.079734, 0.021395, -0.053351  # dense_weights[330]
-    .float -0.071475, -0.048032, -0.075326, 0.105978, 0.131167, -0.124532, -0.001210, -0.149572, -0.037234, 0.139900  # dense_weights[331]
-    .float -0.027081, -0.026316, -0.079461, 0.007267, -0.085847, -0.029114, -0.048578, -0.012672, 0.196571, 0.182511  # dense_weights[332]
-    .float 0.005827, 0.059674, 0.031494, 0.032547, -0.178315, -0.012583, -0.161350, 0.022434, 0.015346, 0.042774  # dense_weights[333]
-    .float 0.015008, -0.028845, -0.183385, -0.138754, 0.306252, 0.063508, 0.146697, -0.156605, -0.069117, 0.048668  # dense_weights[334]
-    .float 0.080597, 0.041306, -0.012602, -0.071008, -0.041853, -0.023361, 0.016757, 0.103715, -0.039938, 0.079377  # dense_weights[335]
-    .float -0.058398, 0.229466, 0.005198, -0.277291, 0.216543, -0.121967, -0.063558, -0.009126, -0.039130, -0.215737  # dense_weights[336]
-    .float 0.001381, -0.004715, -0.050270, -0.036143, -0.080219, -0.004640, -0.213969, 0.047012, 0.013413, 0.012348  # dense_weights[337]
-    .float -0.096063, 0.011981, -0.008729, 0.093742, -0.228650, -0.068713, -0.131519, 0.071944, -0.022003, 0.041285  # dense_weights[338]
-    .float 0.003506, 0.017945, -0.158909, 0.092196, 0.043082, -0.251434, -0.006193, -0.017196, -0.057898, 0.136332  # dense_weights[339]
-    .float -0.053321, -0.064092, 0.046530, -0.041031, -0.106906, -0.082332, -0.067227, -0.079298, 0.136051, 0.133909  # dense_weights[340]
-    .float -0.055223, 0.032171, 0.136948, 0.134555, -0.135851, -0.030659, -0.141983, 0.137632, -0.044322, 0.043724  # dense_weights[341]
-    .float 0.032326, 0.039839, -0.017653, -0.046125, 0.259973, -0.171085, 0.148017, -0.044671, -0.280016, -0.098222  # dense_weights[342]
-    .float -0.008142, 0.073855, -0.140196, 0.034344, -0.082584, -0.015569, -0.077850, 0.061125, -0.029222, 0.050167  # dense_weights[343]
-    .float 0.034433, 0.113277, 0.142885, -0.046939, 0.099165, -0.176022, -0.217872, 0.072650, -0.012925, -0.051888  # dense_weights[344]
-    .float -0.001971, 0.005014, -0.036705, 0.008648, -0.053758, 0.038029, -0.212680, 0.043866, 0.070140, -0.002652  # dense_weights[345]
-    .float 0.012165, -0.094148, -0.072912, 0.011901, -0.063247, 0.123580, -0.010482, 0.088715, -0.086987, 0.063857  # dense_weights[346]
-    .float -0.027155, -0.009016, -0.072424, 0.230051, 0.127995, -0.340065, -0.114708, -0.015695, 0.069080, -0.006305  # dense_weights[347]
-    .float 0.002527, -0.008773, -0.073817, 0.031038, -0.122295, -0.063162, -0.107607, 0.024744, 0.022085, 0.075820  # dense_weights[348]
-    .float 0.050619, -0.241952, 0.025766, 0.009698, -0.137252, 0.108951, -0.174430, 0.096527, 0.029550, 0.024169  # dense_weights[349]
-    .float -0.113218, 0.244473, 0.070574, -0.021927, 0.328171, -0.460859, -0.127099, -0.084410, -0.188715, -0.215271  # dense_weights[350]
-    .float 0.047567, 0.110451, -0.098716, -0.018285, -0.062463, -0.044625, -0.070792, -0.000680, -0.033277, -0.069523  # dense_weights[351]
-    .float 0.117846, 0.017724, 0.093295, -0.010240, 0.107267, -0.164039, -0.307820, 0.057843, 0.032060, 0.047386  # dense_weights[352]
-    .float 0.079904, -0.109403, -0.028687, -0.094002, -0.065003, 0.128183, -0.056305, 0.087828, 0.083384, 0.055535  # dense_weights[353]
-    .float -0.092506, -0.118038, -0.123423, -0.123179, -0.072926, 0.222530, 0.086203, 0.003446, -0.065949, -0.001965  # dense_weights[354]
-    .float -0.101575, -0.076525, 0.028305, 0.116271, 0.066183, -0.340454, -0.102199, 0.025640, 0.072541, 0.026041  # dense_weights[355]
-    .float 0.113007, -0.010329, -0.011777, 0.041517, -0.107381, 0.002500, -0.108449, 0.001453, 0.035302, 0.062290  # dense_weights[356]
-    .float 0.115089, -0.215282, -0.018951, -0.046959, -0.265056, 0.106904, -0.089997, 0.015188, 0.004371, 0.010854  # dense_weights[357]
-    .float -0.069375, 0.095883, 0.096066, 0.074435, 0.412027, -0.447971, -0.176802, -0.064002, -0.124256, -0.127702  # dense_weights[358]
-    .float 0.031237, -0.049579, 0.013455, -0.008433, 0.031625, -0.148191, -0.103840, 0.028135, 0.029398, -0.006335  # dense_weights[359]
-    .float 0.106882, -0.043067, -0.000608, 0.022756, -0.025502, -0.092564, -0.164526, 0.038048, 0.038898, -0.020577  # dense_weights[360]
-    .float 0.022321, -0.060556, -0.008654, -0.018197, -0.030636, 0.117307, -0.034138, 0.034422, 0.094413, -0.016700  # dense_weights[361]
-    .float -0.018698, -0.038961, -0.127479, -0.116896, -0.101050, 0.254109, 0.044867, 0.076706, -0.004348, -0.060432  # dense_weights[362]
-    .float -0.088505, 0.011231, -0.031552, 0.102614, 0.175233, -0.280373, -0.091698, 0.142382, 0.087337, -0.228827  # dense_weights[363]
-    .float 0.123861, -0.015623, -0.049350, 0.028768, -0.012701, -0.043053, -0.053109, 0.038134, -0.011113, -0.023874  # dense_weights[364]
-    .float 0.013819, -0.162754, -0.108676, -0.048709, -0.210122, 0.215993, 0.005749, -0.101911, 0.042477, 0.061146  # dense_weights[365]
-    .float -0.048650, 0.093951, 0.091140, 0.072506, 0.369177, -0.447127, -0.291243, 0.126940, -0.062248, -0.399259  # dense_weights[366]
-    .float 0.106267, -0.069469, 0.070062, 0.050030, -0.004270, -0.054878, -0.060847, 0.122138, 0.025359, -0.019664  # dense_weights[367]
-    .float 0.085400, -0.048137, 0.007598, 0.073622, -0.110840, -0.172403, -0.019910, 0.081987, 0.004639, 0.061439  # dense_weights[368]
-    .float -0.010003, -0.075797, -0.149403, -0.068132, -0.152778, 0.239034, -0.007431, 0.011756, 0.051401, -0.038057  # dense_weights[369]
-    .float -0.085275, -0.052838, -0.127493, -0.167645, -0.017508, 0.282735, 0.115116, 0.042211, 0.003292, -0.048734  # dense_weights[370]
-    .float -0.050461, 0.016345, -0.073607, -0.080298, 0.018692, 0.182735, -0.081350, 0.097677, 0.044794, -0.256938  # dense_weights[371]
-    .float 0.083165, 0.012740, -0.026488, -0.082997, -0.107572, 0.051574, -0.056188, -0.013700, -0.002941, 0.007094  # dense_weights[372]
-    .float -0.038807, -0.146039, -0.203789, -0.061520, -0.090790, 0.076019, 0.007495, -0.142384, 0.075254, -0.080213  # dense_weights[373]
-    .float -0.111812, 0.112691, 0.057266, 0.035396, 0.088363, 0.034963, -0.281062, 0.115624, -0.013911, -0.236571  # dense_weights[374]
-    .float 0.117445, -0.074814, 0.022096, -0.030181, -0.099294, -0.045060, -0.032307, 0.080952, 0.062034, 0.013835  # dense_weights[375]
-    .float 0.069135, 0.008704, 0.008425, 0.036364, -0.123725, -0.018248, -0.046676, -0.087257, 0.059474, 0.037776  # dense_weights[376]
-    .float -0.044129, -0.170079, -0.038042, -0.108770, -0.099840, 0.299970, -0.164280, -0.116327, -0.066034, -0.129560  # dense_weights[377]
-    .float -0.011307, -0.234235, -0.080049, -0.118114, -0.109981, 0.418528, -0.073279, -0.055985, -0.040073, -0.060658  # dense_weights[378]
-    .float -0.202193, 0.031820, -0.080165, -0.045632, -0.187251, 0.463816, -0.204002, -0.082319, -0.068738, -0.222523  # dense_weights[379]
-    .float 0.069183, -0.047642, -0.147947, -0.041644, -0.016334, 0.062610, -0.048645, 0.001919, 0.077924, -0.008522  # dense_weights[380]
-    .float -0.075235, -0.148240, -0.125947, -0.142129, 0.026095, 0.147321, -0.015037, -0.123906, 0.036766, -0.141575  # dense_weights[381]
-    .float -0.087464, 0.044086, 0.104987, -0.050138, -0.097590, 0.079703, -0.091027, 0.005783, -0.075813, -0.014500  # dense_weights[382]
-    .float 0.085820, -0.109854, -0.054426, -0.101829, -0.040012, 0.018488, -0.008147, -0.049567, 0.052527, -0.025306  # dense_weights[383]
-    .float -0.078916, -0.055682, 0.009216, 0.037916, -0.035914, 0.126441, -0.052177, 0.066445, -0.071408, -0.085909  # dense_weights[384]
-    .float -0.048747, -0.063469, -0.092586, -0.055435, -0.049660, -0.048509, -0.068627, 0.088378, -0.066266, -0.059988  # dense_weights[385]
-    .float -0.137843, -0.058869, -0.012890, 0.076158, -0.139650, -0.074560, -0.147724, 0.133906, 0.001677, -0.084450  # dense_weights[386]
-    .float -0.113541, -0.044234, 0.015508, -0.060494, -0.046100, 0.016547, -0.106147, -0.005949, -0.023168, 0.014415  # dense_weights[387]
-    .float -0.055327, -0.038788, 0.073239, 0.075668, -0.084053, -0.180396, -0.210098, 0.237728, -0.081563, -0.039296  # dense_weights[388]
-    .float -0.039047, -0.030917, -0.081724, -0.020864, -0.088122, -0.067455, 0.001653, 0.036420, 0.084792, -0.010710  # dense_weights[389]
-    .float -0.085022, 0.029929, 0.020059, -0.050920, -0.107361, 0.040632, -0.043128, 0.002593, 0.022375, 0.053175  # dense_weights[390]
-    .float -0.048068, -0.091653, -0.020548, 0.122402, -0.078853, -0.238331, -0.145841, 0.079990, 0.017826, -0.113673  # dense_weights[391]
-    .float -0.070399, 0.094870, -0.066182, -0.089784, -0.088581, 0.152178, 0.010692, 0.024890, -0.113989, -0.005616  # dense_weights[392]
-    .float -0.014488, -0.079387, -0.074262, -0.096124, -0.013242, -0.020577, 0.026809, 0.014587, -0.057859, -0.045271  # dense_weights[393]
-    .float 0.009128, -0.057244, -0.046050, -0.000155, 0.001447, -0.121996, -0.000892, 0.071796, -0.094799, -0.033590  # dense_weights[394]
-    .float 0.071652, 0.054943, -0.058036, -0.096699, -0.003289, 0.072657, 0.054280, -0.117314, -0.061132, 0.018301  # dense_weights[395]
-    .float 0.004400, 0.039876, 0.159261, 0.071206, 0.068617, -0.176969, -0.048085, 0.076091, 0.008166, -0.111485  # dense_weights[396]
-    .float 0.022928, 0.007005, -0.022947, -0.021869, 0.000879, 0.017487, -0.053416, -0.066767, 0.075936, 0.068494  # dense_weights[397]
-    .float 0.055043, -0.074835, -0.143809, -0.064513, 0.035923, 0.070304, 0.063280, -0.026220, -0.003836, 0.102906  # dense_weights[398]
-    .float 0.030587, -0.145554, 0.040026, 0.043183, -0.012847, -0.065012, -0.005605, 0.007884, 0.046372, -0.023730  # dense_weights[399]
-    .float -0.049119, 0.036380, -0.202244, -0.327452, 0.101742, 0.120479, 0.157371, -0.120834, 0.202196, 0.035051  # dense_weights[400]
-    .float -0.017269, -0.044001, 0.039359, 0.046440, 0.064014, 0.026600, 0.052490, 0.100207, -0.054602, 0.048004  # dense_weights[401]
-    .float 0.008671, -0.027797, 0.097382, 0.039388, 0.043936, -0.078012, -0.005016, 0.050407, -0.045618, -0.061264  # dense_weights[402]
-    .float 0.059329, 0.043217, -0.161509, -0.035711, 0.059661, -0.004433, 0.081423, 0.001765, -0.070552, 0.025529  # dense_weights[403]
-    .float -0.051173, 0.100733, 0.008816, 0.002145, -0.003537, -0.045872, -0.096734, 0.081331, 0.052725, -0.062116  # dense_weights[404]
-    .float 0.014916, -0.080545, -0.016121, 0.065720, 0.044235, 0.039514, -0.054280, 0.075579, -0.030991, 0.025405  # dense_weights[405]
-    .float 0.081684, -0.009836, -0.072478, -0.063483, 0.086207, 0.051485, 0.158390, -0.194300, -0.001035, 0.027966  # dense_weights[406]
-    .float 0.047028, 0.006599, -0.037675, -0.065591, 0.050101, 0.010219, -0.021369, 0.012499, -0.053919, 0.086763  # dense_weights[407]
-    .float -0.041930, -0.266240, -0.304596, -0.455402, 0.094862, 0.176365, 0.128287, -0.151026, 0.173000, 0.153699  # dense_weights[408]
-    .float 0.015251, -0.068343, -0.016885, 0.021342, 0.120585, 0.044448, -0.023711, 0.033739, -0.006056, 0.008360  # dense_weights[409]
-    .float -0.032021, -0.043790, 0.133095, 0.107382, -0.026606, -0.073970, -0.046928, 0.145590, -0.162202, -0.080927  # dense_weights[410]
-    .float 0.029384, 0.015102, -0.103454, -0.021203, 0.047289, -0.063942, 0.123263, -0.007846, -0.094757, 0.000662  # dense_weights[411]
-    .float -0.040176, -0.063386, -0.037189, 0.032833, 0.077294, -0.015916, -0.029275, -0.028290, 0.034088, -0.004942  # dense_weights[412]
-    .float 0.005409, -0.016928, -0.031594, -0.040410, -0.008372, 0.104864, -0.099839, -0.024678, 0.096214, 0.092779  # dense_weights[413]
-    .float 0.088990, -0.014006, -0.131342, -0.030460, 0.128986, 0.026526, 0.110922, -0.135454, -0.091903, 0.177553  # dense_weights[414]
-    .float 0.039753, -0.025213, -0.063890, -0.124023, 0.060878, 0.062738, -0.037473, 0.024602, 0.006523, 0.082807  # dense_weights[415]
-    .float 0.015903, -0.491339, -0.235962, -0.514623, 0.177318, 0.204141, 0.089959, -0.238403, 0.271392, 0.097937  # dense_weights[416]
-    .float -0.018971, -0.122547, -0.090780, 0.073579, 0.043936, 0.004376, -0.016501, -0.003172, -0.027703, -0.013495  # dense_weights[417]
-    .float -0.083029, -0.146806, 0.071305, 0.043522, 0.009786, -0.034627, 0.019249, 0.090530, -0.025892, 0.021063  # dense_weights[418]
-    .float -0.027643, -0.108984, -0.124691, 0.039546, 0.095991, -0.007488, 0.054161, -0.097575, -0.161447, 0.007878  # dense_weights[419]
-    .float -0.073977, -0.184931, -0.026967, -0.079968, 0.084155, -0.021588, -0.063899, -0.160588, 0.055146, 0.169344  # dense_weights[420]
-    .float -0.044269, -0.060850, -0.042296, -0.001882, -0.048624, 0.033989, -0.064438, 0.002845, 0.038007, -0.041071  # dense_weights[421]
-    .float 0.051364, -0.055210, -0.303939, -0.015475, 0.191590, 0.073092, 0.112493, -0.283216, -0.149043, 0.109198  # dense_weights[422]
-    .float 0.047076, -0.052574, -0.036460, -0.090855, -0.021589, 0.049460, 0.053035, -0.029922, -0.040456, 0.099679  # dense_weights[423]
-    .float -0.006012, -0.131948, -0.053234, -0.519266, 0.178231, 0.190184, -0.015888, -0.150237, 0.126014, -0.029660  # dense_weights[424]
-    .float -0.052807, 0.124276, -0.034527, 0.066894, -0.156924, -0.023939, -0.099352, -0.006022, 0.062400, 0.095091  # dense_weights[425]
-    .float -0.154228, -0.041775, 0.045770, 0.100458, -0.060321, -0.005379, 0.026547, -0.017430, -0.001881, -0.035709  # dense_weights[426]
-    .float -0.091552, 0.019709, -0.146014, 0.059362, -0.042117, -0.133532, -0.056776, -0.051625, -0.048893, 0.128985  # dense_weights[427]
-    .float -0.091512, -0.112662, -0.092249, -0.060402, 0.025716, 0.085350, -0.020440, -0.133318, 0.145728, 0.123317  # dense_weights[428]
-    .float -0.137718, 0.097461, -0.055850, 0.012131, -0.126358, -0.082046, -0.294980, 0.123919, 0.121762, 0.036115  # dense_weights[429]
-    .float -0.009549, 0.060638, -0.129380, 0.026610, 0.044491, -0.027234, 0.172039, -0.023549, -0.233507, -0.029137  # dense_weights[430]
-    .float -0.007088, -0.014420, -0.119151, -0.104672, 0.035308, 0.064966, -0.037634, 0.055558, -0.037080, -0.035804  # dense_weights[431]
-    .float 0.029416, 0.083716, -0.029855, -0.238664, 0.073117, 0.103088, -0.030187, -0.035823, 0.093990, -0.063940  # dense_weights[432]
-    .float -0.114260, 0.044023, -0.039455, 0.027786, -0.118140, 0.088548, -0.033067, 0.008090, 0.092962, 0.079111  # dense_weights[433]
-    .float -0.196503, -0.012934, -0.056081, 0.075843, -0.089025, 0.010880, 0.003380, 0.048245, -0.020921, -0.026536  # dense_weights[434]
-    .float -0.053479, 0.025278, -0.033126, 0.106217, 0.052643, -0.180301, -0.059445, 0.033585, -0.004774, 0.149436  # dense_weights[435]
-    .float -0.093133, -0.057726, -0.108568, 0.050024, -0.136540, -0.007093, 0.002730, -0.142012, 0.082718, 0.168410  # dense_weights[436]
-    .float -0.071630, 0.053735, 0.059483, 0.094478, -0.065877, 0.029764, -0.247917, 0.088423, -0.039650, 0.017542  # dense_weights[437]
-    .float -0.137994, 0.083470, 0.058520, 0.118635, 0.114066, -0.220266, 0.072196, 0.120743, -0.255251, -0.052736  # dense_weights[438]
-    .float -0.046748, 0.124414, -0.154794, 0.071393, -0.066294, -0.048932, -0.099756, 0.015923, -0.031819, -0.045846  # dense_weights[439]
-    .float -0.089240, 0.064370, 0.016934, -0.081725, 0.096628, -0.026167, -0.100944, 0.091840, -0.009609, 0.038598  # dense_weights[440]
-    .float -0.165958, -0.029791, -0.071529, 0.046330, -0.078376, 0.051534, -0.072000, -0.033473, -0.012755, 0.082989  # dense_weights[441]
-    .float -0.185641, -0.009009, -0.092914, 0.152515, -0.093455, 0.120053, 0.032900, -0.011341, 0.014535, 0.147356  # dense_weights[442]
-    .float -0.066583, -0.083375, 0.029352, 0.081747, 0.021241, -0.327342, -0.003071, 0.017041, 0.133316, 0.082040  # dense_weights[443]
-    .float 0.004251, 0.018052, -0.125009, 0.095523, -0.019385, -0.082201, -0.024587, 0.053602, 0.120743, 0.017680  # dense_weights[444]
-    .float 0.051062, -0.103125, 0.095742, 0.073542, -0.055557, 0.011737, -0.109855, 0.158242, 0.056173, -0.034440  # dense_weights[445]
-    .float -0.018853, -0.029418, 0.107067, 0.061927, 0.105337, -0.657695, -0.090540, 0.121807, -0.078369, -0.102607  # dense_weights[446]
-    .float -0.015819, 0.119184, -0.025183, 0.002570, 0.062106, -0.203330, -0.173094, -0.027751, -0.032327, -0.024858  # dense_weights[447]
-    .float 0.154981, 0.017575, 0.051243, -0.086839, 0.157744, -0.066227, -0.259388, 0.048711, -0.044651, 0.086223  # dense_weights[448]
-    .float -0.023910, -0.116672, -0.024560, -0.031964, 0.011860, 0.111450, -0.017622, 0.031967, -0.023839, 0.123747  # dense_weights[449]
-    .float -0.207309, -0.218197, -0.043940, -0.002240, -0.042144, 0.126558, 0.062312, -0.008337, 0.018373, 0.062829  # dense_weights[450]
-    .float -0.055657, -0.217785, 0.034020, 0.083315, 0.034420, -0.494516, -0.114301, 0.031515, 0.101143, -0.022653  # dense_weights[451]
-    .float 0.071504, -0.048552, -0.057765, 0.026113, 0.065937, -0.074803, -0.151619, -0.004672, 0.037512, 0.072563  # dense_weights[452]
-    .float 0.053173, -0.172832, -0.027416, -0.026372, -0.166315, 0.004457, -0.078152, 0.101723, 0.010276, -0.036952  # dense_weights[453]
-    .float -0.044847, -0.038883, 0.154754, 0.080687, 0.213667, -0.692651, -0.275589, 0.050134, 0.075632, 0.072007  # dense_weights[454]
-    .float 0.024006, -0.021084, -0.058507, 0.020792, 0.057821, -0.178293, -0.124690, 0.044896, 0.070003, 0.018678  # dense_weights[455]
-    .float 0.074952, -0.023198, 0.026327, 0.035370, -0.025613, -0.173986, -0.191102, -0.051479, -0.049319, 0.071501  # dense_weights[456]
-    .float -0.068099, -0.063453, -0.093040, -0.149137, -0.014367, 0.125769, 0.064593, -0.035465, 0.043941, -0.009941  # dense_weights[457]
-    .float -0.076196, -0.119818, -0.092287, -0.104079, -0.071692, 0.196730, 0.193076, -0.002828, -0.021079, 0.000041  # dense_weights[458]
-    .float -0.035185, -0.086463, 0.058958, 0.111305, 0.072669, -0.420618, -0.019196, 0.023810, 0.183728, -0.006468  # dense_weights[459]
-    .float 0.059527, -0.002698, 0.043603, -0.039560, 0.073386, -0.126060, -0.091541, 0.034782, 0.066975, 0.104035  # dense_weights[460]
-    .float 0.031539, -0.088017, -0.044826, 0.002215, -0.151536, 0.032082, -0.018481, -0.094337, 0.138468, -0.066705  # dense_weights[461]
-    .float 0.029942, 0.191286, 0.166356, -0.017602, 0.157330, -0.659259, -0.321187, 0.068948, 0.205301, 0.011322  # dense_weights[462]
-    .float 0.027234, 0.021826, 0.038093, 0.063226, 0.014674, -0.051400, -0.164268, 0.063000, 0.081487, 0.034602  # dense_weights[463]
-    .float 0.086998, -0.015010, -0.023617, -0.003463, 0.026299, -0.303397, 0.082092, 0.064436, -0.027771, 0.118244  # dense_weights[464]
-    .float -0.002094, -0.031714, -0.111915, -0.140073, -0.037471, 0.183370, 0.087856, -0.126117, -0.034031, 0.021855  # dense_weights[465]
-    .float -0.127472, -0.072041, -0.132081, -0.136096, -0.054035, 0.162976, 0.059961, -0.042175, -0.009864, -0.201207  # dense_weights[466]
-    .float -0.005439, 0.007195, 0.079388, -0.086105, 0.080416, -0.275182, -0.033394, 0.019559, 0.274269, -0.207579  # dense_weights[467]
-    .float -0.014159, -0.076297, 0.061571, -0.013508, -0.045614, -0.160908, -0.023998, -0.072254, 0.014192, 0.027195  # dense_weights[468]
-    .float -0.062153, -0.130100, -0.073588, 0.061151, -0.131348, 0.135366, -0.004186, -0.036404, 0.112067, -0.107557  # dense_weights[469]
-    .float 0.207185, 0.065766, 0.216742, 0.048876, -0.077591, -0.404278, -0.296000, -0.104185, 0.194502, -0.060655  # dense_weights[470]
-    .float 0.106768, -0.081366, 0.017870, 0.036382, -0.059749, -0.132327, -0.053204, -0.034806, 0.049374, 0.076010  # dense_weights[471]
-    .float 0.121572, 0.025355, 0.007757, -0.047222, -0.114678, -0.134234, 0.050428, -0.093993, 0.040416, 0.062118  # dense_weights[472]
-    .float -0.052487, -0.017459, -0.060277, -0.171807, -0.099345, 0.197803, 0.020617, -0.105122, -0.000113, -0.048919  # dense_weights[473]
-    .float -0.041713, 0.036779, -0.075761, -0.158026, -0.081547, 0.168527, 0.168346, -0.051909, -0.132998, -0.068872  # dense_weights[474]
-    .float -0.099074, 0.055446, 0.210726, -0.101549, -0.026312, 0.097556, -0.103943, -0.056430, -0.110373, -0.132813  # dense_weights[475]
-    .float 0.016214, -0.019275, -0.030982, -0.012687, -0.082944, 0.102383, -0.073960, -0.103885, 0.021524, -0.063287  # dense_weights[476]
-    .float -0.158743, -0.157239, -0.053476, -0.149177, -0.158463, 0.291553, -0.236351, -0.129034, 0.020130, -0.145301  # dense_weights[477]
-    .float -0.127516, 0.054148, 0.189774, 0.005367, -0.084875, 0.092023, -0.244569, -0.031045, -0.172735, -0.047077  # dense_weights[478]
-    .float 0.002827, -0.102519, -0.129132, -0.108452, -0.112909, 0.098570, 0.028526, -0.144684, 0.114810, -0.044124  # dense_weights[479]
-    .float 0.009501, 0.064766, 0.053311, -0.030744, -0.120918, 0.134451, -0.067119, -0.040586, -0.127118, 0.034040  # dense_weights[480]
-    .float 0.075677, -0.079579, 0.037569, -0.099583, 0.052503, -0.099146, -0.050277, 0.042976, -0.044968, -0.010515  # dense_weights[481]
-    .float -0.091691, -0.018145, 0.079374, -0.013347, -0.062314, -0.115185, -0.177590, 0.083550, -0.101501, -0.039171  # dense_weights[482]
-    .float -0.056472, -0.024690, -0.104504, -0.125832, 0.077434, -0.068547, -0.010349, -0.014332, -0.049253, 0.029444  # dense_weights[483]
-    .float -0.076589, 0.085427, 0.126109, 0.117324, -0.067377, -0.141750, -0.258992, 0.093732, -0.119143, -0.130595  # dense_weights[484]
-    .float 0.057688, 0.064744, -0.114825, -0.145152, -0.011611, -0.106564, -0.057788, 0.164638, 0.051375, 0.019896  # dense_weights[485]
-    .float -0.051242, 0.059541, -0.070174, -0.178620, -0.047345, 0.030915, 0.007955, -0.000421, -0.029167, 0.089404  # dense_weights[486]
-    .float 0.025964, -0.016128, -0.026062, 0.026434, -0.027593, -0.080511, -0.107515, 0.147253, 0.027393, -0.092211  # dense_weights[487]
-    .float -0.196913, 0.112364, -0.200898, 0.040849, -0.022803, 0.214213, -0.042443, -0.177557, -0.135800, 0.229869  # dense_weights[488]
-    .float 0.070233, 0.037690, 0.047824, -0.079087, 0.030273, -0.020133, 0.049591, 0.124458, -0.006209, -0.106126  # dense_weights[489]
-    .float 0.027524, -0.044145, 0.107550, -0.019645, 0.021352, -0.119754, -0.026256, 0.039013, 0.012315, -0.134135  # dense_weights[490]
-    .float 0.094970, -0.060242, -0.095888, -0.077538, 0.115082, -0.083125, 0.034738, 0.035349, -0.083236, 0.069233  # dense_weights[491]
-    .float -0.098690, 0.017009, 0.235419, 0.013207, -0.012973, -0.086591, -0.054510, 0.019332, 0.084673, -0.010223  # dense_weights[492]
-    .float 0.008882, -0.003206, -0.069836, -0.084036, -0.016387, 0.019824, 0.065132, 0.103185, -0.049940, -0.052576  # dense_weights[493]
-    .float 0.070098, -0.084478, -0.023196, -0.181559, -0.002088, -0.028712, 0.069849, -0.050259, -0.000258, 0.029283  # dense_weights[494]
-    .float -0.039354, -0.023315, -0.006435, -0.153960, 0.080672, -0.013439, 0.047121, 0.089035, -0.020730, 0.022874  # dense_weights[495]
-    .float 0.033968, -0.102449, -0.340873, -0.044007, 0.140106, 0.020962, 0.100791, -0.264652, 0.132992, 0.272279  # dense_weights[496]
-    .float -0.002593, 0.043376, 0.093745, -0.037333, 0.122471, 0.009383, 0.078802, 0.063131, 0.030670, -0.031430  # dense_weights[497]
-    .float 0.003774, 0.087142, 0.037124, 0.008415, 0.024025, -0.064128, -0.074604, 0.121354, 0.003003, -0.115241  # dense_weights[498]
-    .float 0.002462, -0.038674, 0.053013, 0.010217, 0.124959, -0.084010, 0.067598, 0.033518, -0.149787, -0.029604  # dense_weights[499]
-    .float 0.071872, 0.076362, 0.065151, -0.002182, -0.013178, -0.036863, -0.126233, -0.070455, 0.126838, -0.003300  # dense_weights[500]
-    .float -0.031879, 0.005847, -0.072805, 0.022711, 0.029751, 0.136956, 0.075800, -0.072815, -0.003379, 0.043840  # dense_weights[501]
-    .float 0.103416, 0.068948, -0.013314, 0.010143, 0.060825, -0.046750, 0.137855, -0.094715, -0.152799, -0.076329  # dense_weights[502]
-    .float 0.021690, -0.080217, -0.077917, -0.063405, 0.047326, 0.036922, -0.016560, -0.002313, 0.016758, -0.015933  # dense_weights[503]
-    .float 0.064200, -0.083931, -0.376443, -0.154946, 0.114684, 0.058886, 0.117413, -0.403244, 0.146933, 0.197477  # dense_weights[504]
-    .float -0.008683, -0.016866, 0.066380, -0.018499, 0.060137, 0.000890, 0.063320, 0.052287, -0.003600, -0.011706  # dense_weights[505]
-    .float 0.067284, -0.014080, 0.081125, -0.016598, 0.058129, -0.007330, 0.020284, 0.122623, -0.052989, -0.139442  # dense_weights[506]
-    .float 0.086927, 0.041900, 0.027406, -0.008397, 0.000049, 0.001589, 0.151753, 0.047366, -0.033366, -0.023309  # dense_weights[507]
-    .float 0.020880, -0.025524, 0.018315, -0.138343, -0.032584, 0.050320, -0.127458, -0.180173, 0.099468, 0.000205  # dense_weights[508]
-    .float -0.057037, -0.109806, -0.100237, -0.000153, 0.009860, 0.054993, -0.069815, -0.008764, -0.036272, 0.008511  # dense_weights[509]
-    .float 0.049010, -0.037402, -0.135599, 0.142552, 0.097336, -0.012221, 0.084422, -0.023965, -0.231418, 0.002026  # dense_weights[510]
-    .float 0.117546, -0.007564, -0.058092, -0.103684, 0.086477, -0.020337, -0.004246, -0.081010, 0.008311, -0.034893  # dense_weights[511]
-    .float 0.000125, -0.233779, -0.346053, -0.419881, 0.069195, 0.193708, -0.048328, -0.121195, 0.254483, 0.139670  # dense_weights[512]
-    .float -0.030104, -0.004910, 0.075436, 0.135920, 0.056415, -0.008531, 0.031306, -0.035688, -0.024588, 0.002384  # dense_weights[513]
-    .float -0.022891, -0.116161, 0.165900, 0.085816, 0.000577, 0.016263, -0.054334, -0.032363, -0.067162, -0.072549  # dense_weights[514]
-    .float 0.042953, -0.084240, 0.029962, 0.086923, 0.032334, -0.075685, 0.022391, -0.027152, 0.018458, -0.045398  # dense_weights[515]
-    .float -0.058693, -0.303448, -0.021671, -0.177435, 0.109456, 0.051178, 0.002234, -0.165512, 0.087435, 0.089791  # dense_weights[516]
-    .float -0.141921, -0.013716, -0.045288, 0.072148, -0.012009, 0.053568, -0.156413, -0.005398, 0.098208, -0.009895  # dense_weights[517]
-    .float 0.081859, 0.005808, -0.183317, 0.091550, 0.082505, 0.069057, 0.139351, -0.061782, -0.259730, 0.015238  # dense_weights[518]
-    .float 0.076128, -0.036724, -0.114021, -0.103980, 0.064786, 0.025331, 0.099472, -0.031816, -0.016975, -0.007297  # dense_weights[519]
-    .float 0.088718, -0.111255, -0.203400, -0.378762, 0.085168, 0.171353, -0.022283, -0.147088, 0.121595, -0.089707  # dense_weights[520]
-    .float -0.072323, 0.047732, 0.042801, 0.104107, -0.055566, 0.028726, -0.041620, -0.203711, 0.001085, 0.124233  # dense_weights[521]
-    .float -0.097986, -0.053915, 0.113114, 0.128213, 0.039097, 0.069169, -0.010048, -0.101241, -0.043058, 0.052919  # dense_weights[522]
-    .float -0.108558, 0.021318, -0.005067, 0.110673, -0.110646, -0.018757, -0.101311, -0.093874, 0.068154, 0.078329  # dense_weights[523]
-    .float -0.074328, -0.071036, -0.091429, -0.033087, 0.078258, 0.114089, 0.104278, -0.180328, 0.063050, 0.081962  # dense_weights[524]
-    .float -0.227705, 0.008428, -0.006587, 0.044034, -0.077688, 0.109902, -0.145130, -0.026417, 0.163634, 0.047502  # dense_weights[525]
-    .float -0.033392, 0.094466, -0.071480, 0.186340, -0.184866, -0.069386, 0.054436, 0.040306, -0.242803, -0.253279  # dense_weights[526]
-    .float -0.041101, 0.115463, -0.199638, 0.043975, 0.094507, 0.068688, 0.094436, -0.072339, 0.063329, -0.075415  # dense_weights[527]
-    .float 0.088951, 0.132012, 0.045568, -0.171533, -0.037032, 0.082794, -0.013622, -0.097866, 0.022379, -0.201481  # dense_weights[528]
-    .float -0.231132, 0.040819, -0.043478, 0.031433, 0.050670, -0.034986, 0.021503, -0.167128, 0.048224, 0.156599  # dense_weights[529]
-    .float -0.154010, 0.061262, 0.099377, 0.145164, 0.017017, 0.127305, -0.062671, -0.088769, -0.086752, 0.117197  # dense_weights[530]
-    .float -0.097516, -0.008970, 0.036935, -0.048732, -0.036045, -0.228775, -0.038324, 0.070153, 0.045598, 0.138647  # dense_weights[531]
-    .float -0.097828, -0.064991, -0.120168, 0.038581, -0.100159, 0.065001, 0.121945, -0.175269, 0.154584, 0.025246  # dense_weights[532]
-    .float -0.146016, 0.095325, -0.036117, 0.089601, 0.012457, 0.060535, -0.158127, -0.051918, -0.044199, 0.115810  # dense_weights[533]
-    .float -0.084712, 0.059760, 0.018311, 0.025312, -0.088725, -0.259151, 0.105435, 0.272777, -0.284721, -0.157053  # dense_weights[534]
-    .float -0.103646, 0.016697, -0.108026, 0.125581, -0.014000, -0.111801, 0.014348, -0.044345, 0.075735, -0.024200  # dense_weights[535]
-    .float -0.040345, 0.051983, -0.096468, -0.054536, 0.106947, 0.069915, -0.158125, 0.059145, -0.033095, 0.099023  # dense_weights[536]
-    .float -0.203010, -0.043778, -0.060635, 0.033212, 0.023902, 0.041828, 0.066759, -0.094436, 0.038674, 0.070383  # dense_weights[537]
-    .float -0.166365, -0.167439, -0.017335, 0.147580, -0.046341, 0.008989, 0.055505, -0.000368, -0.075629, 0.056106  # dense_weights[538]
-    .float -0.039795, -0.076627, 0.107775, 0.028964, 0.021203, -0.162439, -0.051425, 0.022491, -0.031908, -0.023837  # dense_weights[539]
-    .float -0.073584, 0.050779, -0.054184, 0.053330, -0.016892, -0.095404, -0.021758, 0.051601, 0.145003, -0.017331  # dense_weights[540]
-    .float -0.005880, -0.122237, -0.107088, 0.115413, -0.026530, 0.032844, -0.031751, 0.006414, -0.036371, 0.182710  # dense_weights[541]
-    .float 0.100209, 0.078099, 0.126852, -0.095859, -0.030112, -0.474633, -0.148652, 0.175603, -0.092275, -0.132786  # dense_weights[542]
-    .float -0.041908, 0.057584, -0.067193, 0.022668, -0.003475, -0.135123, -0.062521, 0.052790, 0.033350, 0.173509  # dense_weights[543]
-    .float 0.065728, 0.060070, -0.007630, 0.026305, 0.130862, 0.037935, -0.114995, 0.066724, -0.018372, 0.082279  # dense_weights[544]
-    .float -0.166491, -0.165419, -0.085931, 0.035278, -0.040759, 0.002211, 0.087760, 0.001949, -0.101520, 0.108215  # dense_weights[545]
-    .float -0.200500, -0.265541, -0.008866, 0.062048, 0.028558, 0.041339, 0.131093, 0.038515, 0.008139, 0.015620  # dense_weights[546]
-    .float 0.042836, -0.178945, 0.244953, -0.052918, 0.068553, -0.277196, -0.060573, -0.059703, 0.031787, 0.086122  # dense_weights[547]
-    .float -0.131045, -0.052551, -0.035952, -0.021400, 0.105187, -0.066628, -0.086544, 0.108454, 0.122239, 0.006008  # dense_weights[548]
-    .float -0.003362, -0.203147, -0.093709, 0.063439, -0.024293, -0.046031, -0.019100, 0.071097, 0.147777, -0.009527  # dense_weights[549]
-    .float 0.097481, 0.167566, 0.290994, -0.307974, 0.097533, -0.467081, -0.335893, 0.057441, 0.079266, 0.075277  # dense_weights[550]
-    .float 0.030953, -0.000296, -0.016559, 0.065835, 0.014628, -0.114969, -0.070923, 0.005196, 0.001219, 0.098521  # dense_weights[551]
-    .float 0.017419, 0.019031, -0.051386, -0.025814, -0.058396, -0.020162, -0.033348, 0.009377, -0.107384, 0.039391  # dense_weights[552]
-    .float -0.045157, -0.138171, -0.115123, 0.030336, 0.066366, 0.128051, 0.112830, -0.040344, -0.038139, 0.015458  # dense_weights[553]
-    .float -0.093118, -0.224560, -0.087215, 0.057194, 0.012094, 0.012129, 0.044418, 0.011317, 0.027856, -0.182082  # dense_weights[554]
-    .float 0.003577, -0.047375, 0.079276, -0.068480, 0.082286, -0.377534, 0.013160, -0.026568, 0.066530, 0.076168  # dense_weights[555]
-    .float 0.003223, 0.032255, -0.044458, -0.019632, -0.022175, -0.039503, -0.089658, 0.027553, 0.046446, 0.062739  # dense_weights[556]
-    .float -0.051443, -0.091844, -0.039018, 0.073504, -0.010796, -0.093348, 0.026915, -0.039539, 0.085729, -0.042693  # dense_weights[557]
-    .float 0.163107, 0.129366, 0.194746, -0.352219, 0.074733, -0.545613, -0.186882, -0.047334, 0.010329, 0.201686  # dense_weights[558]
-    .float 0.090442, -0.076375, -0.040611, 0.064871, 0.047960, -0.069171, -0.054655, 0.076572, 0.013253, 0.028012  # dense_weights[559]
-    .float 0.127088, -0.017008, -0.018801, -0.034160, 0.090559, -0.029700, 0.025168, 0.044584, -0.087236, 0.079795  # dense_weights[560]
-    .float 0.013779, -0.027667, -0.080541, -0.126030, 0.037462, 0.137769, 0.071810, 0.024641, 0.001715, -0.086551  # dense_weights[561]
-    .float -0.119123, -0.179591, -0.013000, 0.037494, 0.035696, 0.131630, 0.131845, 0.101937, 0.058246, -0.179659  # dense_weights[562]
-    .float 0.130422, -0.111672, 0.093850, 0.003294, 0.021368, -0.277968, -0.026780, 0.098979, -0.034097, -0.186348  # dense_weights[563]
-    .float 0.082225, -0.037204, 0.021171, -0.091843, -0.049357, -0.050770, 0.028635, 0.063377, 0.014068, -0.031632  # dense_weights[564]
-    .float 0.058117, -0.047945, -0.059714, -0.046402, 0.057108, 0.022407, 0.067185, -0.091784, 0.142096, -0.189614  # dense_weights[565]
-    .float 0.270963, 0.047131, 0.269043, -0.082034, -0.095546, -0.368134, -0.077563, -0.098067, -0.062167, 0.122563  # dense_weights[566]
-    .float 0.044430, -0.096443, -0.104031, -0.043027, -0.055171, -0.096310, 0.079720, -0.055229, 0.048815, 0.037602  # dense_weights[567]
-    .float 0.121396, -0.018313, -0.113494, -0.100615, 0.022693, -0.124689, 0.063968, 0.034710, 0.047380, 0.047681  # dense_weights[568]
-    .float -0.057760, -0.051296, 0.149569, -0.167034, 0.012447, 0.078171, -0.010167, 0.029014, -0.101917, -0.102228  # dense_weights[569]
-    .float -0.071197, -0.110994, 0.113787, -0.044205, 0.032687, 0.105975, 0.037586, 0.098628, -0.148742, -0.268901  # dense_weights[570]
-    .float -0.077545, -0.047451, 0.273008, 0.041830, -0.099756, -0.008207, -0.293775, 0.051352, -0.165635, -0.164453  # dense_weights[571]
-    .float -0.009917, -0.000423, -0.007534, -0.164354, -0.069102, -0.072241, 0.084154, -0.005991, 0.038983, -0.019925  # dense_weights[572]
-    .float -0.099724, 0.037909, 0.100260, -0.211284, -0.089061, 0.150638, -0.115175, -0.178620, 0.104909, -0.070417  # dense_weights[573]
-    .float -0.043616, 0.016672, 0.283437, 0.065011, -0.108608, 0.073875, -0.239717, 0.017461, -0.150491, 0.052807  # dense_weights[574]
-    .float 0.073241, -0.027817, -0.087013, -0.096544, -0.034666, 0.017355, 0.011662, -0.047463, -0.050314, -0.077832  # dense_weights[575]
-    .float -0.103480, 0.058978, -0.035041, 0.026321, -0.104204, 0.082321, -0.014214, 0.061771, -0.147144, 0.036673  # dense_weights[576]
-    .float 0.063743, -0.099437, 0.143372, -0.033053, -0.043268, 0.022603, -0.068684, -0.009508, -0.064379, -0.061562  # dense_weights[577]
-    .float -0.042363, -0.017438, 0.128067, 0.032465, -0.068603, -0.026824, -0.104435, 0.117805, -0.059861, -0.042356  # dense_weights[578]
-    .float 0.053483, 0.046332, 0.110327, -0.098828, -0.021492, -0.129403, -0.019745, 0.055816, -0.146686, 0.029624  # dense_weights[579]
-    .float -0.063114, 0.017001, 0.072182, 0.089848, -0.184186, 0.047108, -0.288758, -0.064128, 0.005305, -0.074706  # dense_weights[580]
-    .float 0.005009, 0.085381, -0.048767, -0.024906, 0.041914, -0.135789, -0.081511, 0.045474, -0.105729, -0.093485  # dense_weights[581]
-    .float 0.099704, -0.016039, 0.076348, -0.068205, 0.049042, -0.139558, 0.023480, 0.038016, -0.040273, 0.050465  # dense_weights[582]
-    .float 0.003893, 0.064815, -0.036024, 0.017464, -0.003681, -0.004262, -0.108962, 0.084091, 0.006898, -0.088653  # dense_weights[583]
-    .float -0.089177, -0.032074, -0.159903, 0.160847, -0.099016, 0.205439, -0.161820, -0.081340, -0.228082, 0.279126  # dense_weights[584]
-    .float -0.021959, -0.127749, 0.089038, -0.152686, 0.060301, -0.069763, 0.000994, 0.052860, 0.032509, -0.100122  # dense_weights[585]
-    .float -0.074708, -0.147080, 0.075569, -0.034198, 0.037622, 0.073884, -0.024099, 0.067238, -0.002124, -0.036339  # dense_weights[586]
-    .float 0.025563, -0.120561, 0.078157, -0.150809, 0.097293, -0.102226, 0.030132, 0.059212, -0.013987, -0.104142  # dense_weights[587]
-    .float -0.090583, -0.130060, 0.103085, -0.005564, -0.100496, 0.127452, -0.036945, -0.005712, 0.052212, 0.013245  # dense_weights[588]
-    .float 0.035277, -0.031336, -0.078980, -0.117666, 0.043103, -0.058412, 0.041379, 0.003054, 0.019158, -0.006664  # dense_weights[589]
-    .float 0.137793, -0.032589, 0.027861, -0.135012, 0.000927, -0.036487, -0.001201, 0.007769, -0.056920, -0.054697  # dense_weights[590]
-    .float 0.120496, -0.018492, -0.027730, -0.096890, 0.020958, -0.131248, -0.001614, 0.050172, 0.000479, -0.071379  # dense_weights[591]
-    .float 0.078579, -0.161497, -0.354678, 0.224064, -0.034418, 0.117986, 0.141642, -0.207261, -0.314663, 0.239441  # dense_weights[592]
-    .float 0.083995, -0.026621, 0.100613, -0.058776, 0.082116, -0.052839, 0.073748, 0.013879, 0.062049, -0.107839  # dense_weights[593]
-    .float 0.001401, -0.041451, 0.158547, -0.041727, 0.041778, -0.049903, -0.085762, 0.030534, 0.066691, -0.157124  # dense_weights[594]
-    .float 0.115446, 0.067799, 0.011350, -0.108604, 0.041664, -0.162279, 0.076141, 0.143638, 0.030950, -0.167163  # dense_weights[595]
-    .float -0.046924, -0.014963, 0.022426, -0.072760, -0.010523, 0.026712, -0.064386, 0.016952, 0.145368, 0.070817  # dense_weights[596]
-    .float 0.023143, -0.005592, -0.170296, -0.107402, 0.094234, 0.053767, -0.005090, 0.052127, -0.084014, 0.045170  # dense_weights[597]
-    .float 0.114588, -0.073267, 0.092308, -0.092070, 0.058889, -0.096141, 0.028860, 0.109062, -0.019292, -0.179760  # dense_weights[598]
-    .float 0.087036, 0.000059, -0.031370, -0.094900, 0.066622, -0.060147, -0.012909, -0.024357, 0.061450, 0.020552  # dense_weights[599]
-    .float 0.075330, -0.192284, -0.512653, 0.194269, 0.029300, 0.018636, 0.124502, -0.106914, -0.178265, 0.269397  # dense_weights[600]
-    .float -0.029212, -0.069434, 0.124264, -0.135301, 0.002250, 0.007236, 0.023243, -0.035699, -0.096790, -0.052027  # dense_weights[601]
-    .float -0.003886, -0.035140, 0.158140, -0.085145, 0.030394, 0.012764, -0.060502, 0.121019, -0.102487, -0.047370  # dense_weights[602]
-    .float 0.118111, -0.041550, 0.137123, -0.121397, 0.004821, -0.076984, 0.123077, 0.060759, 0.067917, -0.100678  # dense_weights[603]
-    .float 0.070593, -0.052759, -0.130658, -0.048229, 0.041794, -0.064336, -0.060756, 0.013141, -0.000414, 0.110492  # dense_weights[604]
-    .float -0.129149, -0.064660, -0.101177, -0.089590, 0.094747, 0.176321, -0.000164, 0.049254, 0.014063, 0.024743  # dense_weights[605]
-    .float 0.098894, -0.055612, 0.041427, -0.017693, -0.065259, -0.191447, 0.195127, 0.237338, -0.093905, -0.111545  # dense_weights[606]
-    .float 0.065432, -0.099819, -0.084939, -0.099867, 0.094211, -0.054218, 0.149764, 0.070455, -0.030247, 0.030369  # dense_weights[607]
-    .float 0.166944, -0.073604, -0.463758, -0.053512, -0.027238, 0.127971, 0.030042, 0.000832, 0.009471, 0.174486  # dense_weights[608]
-    .float -0.074862, -0.051932, 0.140832, -0.055973, -0.038247, -0.057453, -0.014476, -0.064914, 0.047004, 0.045105  # dense_weights[609]
-    .float -0.108816, -0.158741, 0.075953, 0.074897, 0.027526, 0.046144, -0.009767, -0.018914, -0.058882, -0.003948  # dense_weights[610]
-    .float -0.056828, -0.025286, 0.156600, -0.057426, -0.083607, -0.174730, 0.108483, -0.031931, 0.064133, -0.074344  # dense_weights[611]
-    .float -0.010775, -0.367997, -0.115165, -0.073121, -0.026502, 0.003640, 0.072667, -0.124454, 0.025696, 0.091521  # dense_weights[612]
-    .float -0.051734, -0.057109, -0.086448, 0.102516, 0.089694, 0.174515, -0.129788, -0.034181, -0.017249, -0.004489  # dense_weights[613]
-    .float 0.077712, 0.071747, 0.049582, -0.074309, -0.021404, -0.077698, 0.099422, 0.174371, -0.063545, -0.304235  # dense_weights[614]
-    .float 0.059312, 0.021433, -0.054338, -0.131687, 0.086408, -0.001278, 0.036259, -0.107450, -0.002100, -0.020690  # dense_weights[615]
-    .float 0.190533, -0.278797, -0.282642, -0.218291, -0.037114, 0.179565, 0.148271, -0.105669, -0.012439, -0.094219  # dense_weights[616]
-    .float -0.158863, 0.022508, 0.031251, -0.020379, -0.006622, 0.069114, 0.009397, -0.188067, -0.055680, 0.049170  # dense_weights[617]
-    .float -0.232489, -0.022833, 0.033819, 0.149800, -0.048215, 0.081992, -0.034997, -0.163861, -0.011976, 0.011811  # dense_weights[618]
-    .float -0.160546, 0.122926, 0.111930, -0.086647, -0.089056, -0.142366, 0.023473, -0.085478, 0.030937, 0.039409  # dense_weights[619]
-    .float 0.000728, -0.117733, -0.015582, 0.038688, 0.051290, 0.032171, 0.115367, -0.320998, -0.010332, 0.013797  # dense_weights[620]
-    .float -0.215520, 0.007898, -0.046175, 0.109246, 0.063550, 0.039421, -0.129982, -0.261445, 0.117711, 0.058298  # dense_weights[621]
-    .float -0.128295, 0.125184, 0.052129, 0.017627, -0.217610, -0.202047, 0.109303, 0.114875, -0.042405, -0.254494  # dense_weights[622]
-    .float -0.040756, 0.104920, -0.001823, 0.060992, -0.045250, 0.019433, 0.049955, -0.163240, 0.016988, 0.059334  # dense_weights[623]
-    .float 0.115465, 0.072090, -0.011565, -0.002428, -0.165919, 0.244142, 0.025511, -0.092783, -0.046883, -0.270858  # dense_weights[624]
-    .float -0.100521, -0.067320, 0.142818, -0.013787, -0.022272, -0.021022, 0.110208, -0.023155, -0.039805, 0.035641  # dense_weights[625]
-    .float -0.109175, -0.043070, 0.062547, 0.105237, 0.095822, -0.029068, -0.031084, -0.041541, -0.080514, 0.045338  # dense_weights[626]
-    .float -0.015467, 0.002238, 0.077144, -0.099644, 0.043459, -0.134631, 0.025966, -0.015568, -0.026112, 0.141365  # dense_weights[627]
-    .float -0.134054, -0.029285, 0.010982, 0.099854, -0.058808, -0.052499, 0.102883, -0.184410, 0.121322, 0.029565  # dense_weights[628]
-    .float -0.218222, 0.037968, -0.091625, 0.060810, 0.070361, 0.014445, -0.070436, -0.119817, -0.032132, 0.248106  # dense_weights[629]
-    .float 0.113423, 0.056448, 0.044903, -0.224117, -0.080571, -0.082353, 0.134086, 0.269505, -0.187545, -0.186451  # dense_weights[630]
-    .float -0.146661, 0.091195, 0.009423, -0.036533, 0.090984, -0.133740, 0.032430, -0.040357, 0.080273, 0.096186  # dense_weights[631]
-    .float -0.162008, 0.063032, -0.147668, -0.080682, -0.049487, 0.028202, -0.087319, 0.003523, 0.067129, 0.071844  # dense_weights[632]
-    .float -0.161143, -0.229740, -0.032396, 0.094016, 0.062104, 0.023877, 0.143913, 0.062195, -0.075246, -0.031867  # dense_weights[633]
-    .float -0.164706, -0.228869, 0.095254, 0.028789, -0.058173, 0.093523, 0.009316, 0.016071, -0.058875, 0.090442  # dense_weights[634]
-    .float 0.050237, -0.052502, 0.138283, -0.206635, 0.036296, -0.110263, -0.003540, 0.064621, -0.010053, 0.063580  # dense_weights[635]
-    .float -0.132042, 0.086045, -0.048848, 0.040017, -0.015405, -0.055783, 0.037596, 0.075326, 0.015425, 0.001317  # dense_weights[636]
-    .float -0.117642, -0.095143, -0.033680, 0.050619, 0.052855, -0.072805, 0.046135, -0.014814, -0.034509, 0.135199  # dense_weights[637]
-    .float 0.147648, -0.006006, 0.119822, -0.267550, 0.028721, -0.130371, -0.178104, 0.269399, -0.179349, -0.101790  # dense_weights[638]
-    .float -0.017321, 0.079211, -0.000887, 0.017037, 0.034783, -0.038677, -0.016847, 0.027059, -0.027419, 0.149693  # dense_weights[639]
-    .float 0.002958, -0.040299, -0.107350, 0.044214, 0.099687, -0.013496, 0.035354, -0.015053, 0.007671, 0.007124  # dense_weights[640]
-    .float -0.104081, -0.217415, 0.002062, 0.020293, 0.048011, 0.013146, 0.019484, 0.107781, 0.009666, -0.040955  # dense_weights[641]
-    .float -0.010370, -0.293114, 0.018965, 0.086810, 0.022394, 0.068900, 0.099197, 0.124112, 0.032569, -0.086748  # dense_weights[642]
-    .float 0.121107, -0.004956, 0.105595, -0.132731, -0.058493, -0.087163, 0.035774, 0.010099, -0.247207, 0.113790  # dense_weights[643]
-    .float -0.036774, -0.034818, -0.024895, 0.033671, 0.104031, -0.076712, -0.050575, 0.038046, 0.061943, 0.074037  # dense_weights[644]
-    .float 0.003609, -0.105591, -0.129666, 0.020411, 0.010095, -0.085866, 0.031978, 0.115057, 0.092085, 0.027490  # dense_weights[645]
-    .float 0.085350, 0.231142, 0.109106, -0.237073, 0.051359, -0.125854, -0.129746, 0.172864, -0.466777, 0.152955  # dense_weights[646]
-    .float -0.013390, -0.087457, -0.053077, -0.005225, 0.051424, -0.013003, 0.007687, 0.026207, -0.028404, 0.144737  # dense_weights[647]
-    .float 0.093708, -0.004525, -0.028637, 0.047989, 0.052049, 0.030026, -0.040493, 0.047921, -0.047232, 0.000510  # dense_weights[648]
-    .float -0.037442, -0.077118, 0.010702, 0.012220, 0.069194, -0.023604, 0.017850, 0.077420, 0.001789, -0.156528  # dense_weights[649]
-    .float -0.031749, -0.144090, 0.040719, 0.143544, 0.025857, -0.082653, 0.006251, 0.131781, 0.005058, -0.226556  # dense_weights[650]
-    .float 0.136460, 0.022578, 0.016581, -0.188630, 0.020945, -0.126769, 0.002182, 0.096940, -0.253772, 0.018770  # dense_weights[651]
-    .float -0.025158, -0.043269, 0.000971, -0.015834, 0.077695, -0.063581, 0.022688, -0.010625, 0.058320, 0.044454  # dense_weights[652]
-    .float -0.027998, -0.192778, -0.089054, -0.033769, 0.155024, -0.007821, 0.062939, 0.138470, 0.112499, -0.069364  # dense_weights[653]
-    .float 0.187463, 0.092217, 0.100454, -0.298087, 0.045159, -0.137944, 0.030234, 0.092893, -0.494696, 0.134068  # dense_weights[654]
-    .float 0.061569, -0.122307, 0.000354, -0.050808, 0.024847, -0.091161, 0.100155, 0.091894, -0.079792, 0.002838  # dense_weights[655]
-    .float -0.020730, 0.022025, -0.188750, -0.062419, 0.087416, -0.074693, -0.005535, -0.003638, -0.073578, 0.014497  # dense_weights[656]
-    .float 0.005745, -0.114455, 0.056201, -0.005130, 0.060509, 0.045612, 0.017741, 0.118663, -0.030944, -0.144140  # dense_weights[657]
-    .float -0.102491, -0.027455, 0.056781, 0.061178, 0.079301, -0.067881, -0.073682, 0.009297, -0.019021, -0.255615  # dense_weights[658]
-    .float 0.041917, -0.059856, 0.133934, -0.006038, -0.063217, -0.132800, 0.046318, -0.010909, -0.138195, -0.139630  # dense_weights[659]
-    .float 0.027594, -0.057302, -0.060834, -0.107045, 0.102121, -0.021459, 0.067131, 0.036862, 0.007446, 0.054617  # dense_weights[660]
-    .float -0.063011, 0.016850, -0.039844, -0.092558, 0.024205, -0.123866, 0.044108, -0.032750, 0.078396, -0.161236  # dense_weights[661]
-    .float 0.204762, -0.018768, 0.011891, -0.084081, -0.142778, -0.152370, 0.147437, -0.015103, -0.085091, -0.001449  # dense_weights[662]
-    .float -0.023322, -0.059431, -0.066908, -0.045401, 0.069215, -0.004476, -0.004477, -0.055956, -0.046916, 0.019927  # dense_weights[663]
-    .float 0.079743, 0.010426, -0.057613, -0.006683, -0.024275, -0.067492, 0.052020, -0.063968, -0.098023, -0.077922  # dense_weights[664]
-    .float -0.095329, 0.009160, 0.186961, -0.014652, 0.025479, 0.032594, -0.078963, -0.028260, -0.140450, -0.134791  # dense_weights[665]
-    .float -0.084656, -0.056101, 0.180497, 0.069382, 0.009702, -0.001194, -0.104871, 0.009550, -0.018904, -0.203281  # dense_weights[666]
-    .float -0.117009, 0.029170, 0.310488, -0.128078, -0.032006, -0.041953, -0.191045, -0.060877, -0.160377, -0.115824  # dense_weights[667]
-    .float -0.030653, 0.062385, 0.147761, -0.009671, -0.042459, -0.164705, 0.054661, -0.031412, -0.093615, -0.094844  # dense_weights[668]
-    .float 0.031285, -0.043373, 0.286301, -0.155915, -0.000325, -0.189362, -0.012524, -0.010402, -0.094521, -0.275342  # dense_weights[669]
-    .float -0.078911, 0.088168, 0.203878, -0.050851, -0.134499, 0.014955, -0.148147, 0.003935, -0.129702, -0.032669  # dense_weights[670]
-    .float 0.078873, -0.076954, 0.060344, -0.036738, -0.003238, -0.050025, 0.072215, 0.020638, -0.052228, -0.080190  # dense_weights[671]
-    .float 0.005933, 0.025506, -0.051743, 0.080578, -0.005140, 0.148873, -0.057443, -0.031707, -0.117973, -0.005269  # dense_weights[672]
-    .float -0.016045, -0.179997, 0.076507, 0.041752, -0.107334, 0.054999, -0.090176, -0.033959, 0.030570, -0.121513  # dense_weights[673]
-    .float -0.084609, -0.040817, 0.083754, 0.024370, -0.086206, 0.056271, -0.245922, 0.013592, -0.141775, -0.057604  # dense_weights[674]
-    .float 0.081905, -0.048105, 0.169281, -0.019410, 0.054788, -0.079397, -0.149543, 0.023533, -0.049853, -0.094159  # dense_weights[675]
-    .float -0.270828, -0.231608, -0.038135, 0.049053, -0.036226, 0.094015, -0.260313, -0.024777, -0.081398, -0.191254  # dense_weights[676]
-    .float 0.039610, -0.064816, 0.133185, -0.062819, -0.021559, -0.049345, -0.154125, -0.033034, -0.070888, -0.022761  # dense_weights[677]
-    .float 0.077064, -0.018900, 0.171004, 0.047378, 0.029209, -0.095057, -0.035484, -0.047042, -0.083102, -0.154435  # dense_weights[678]
-    .float 0.011759, -0.055866, 0.113894, 0.011366, -0.034727, -0.044403, -0.047455, 0.039397, -0.102224, -0.109772  # dense_weights[679]
-    .float -0.106433, -0.043927, -0.154640, 0.143950, -0.136991, 0.128783, -0.102969, -0.085107, -0.235831, 0.010168  # dense_weights[680]
-    .float 0.026602, -0.071654, 0.081239, 0.049341, -0.008733, 0.016958, -0.051449, -0.022284, 0.046643, -0.089301  # dense_weights[681]
-    .float 0.005145, -0.157337, -0.003991, 0.075196, 0.018388, 0.080682, -0.043962, -0.035755, -0.066003, -0.197053  # dense_weights[682]
-    .float 0.072094, -0.074566, 0.041092, -0.076599, 0.071493, -0.065940, 0.055676, 0.061382, 0.000497, -0.075452  # dense_weights[683]
-    .float -0.163060, -0.136322, -0.014585, 0.067372, -0.011892, 0.187099, -0.182177, -0.146925, -0.134429, -0.026545  # dense_weights[684]
-    .float -0.023880, -0.137704, 0.061870, -0.045735, 0.079937, -0.024539, 0.021574, -0.038170, -0.006101, -0.062643  # dense_weights[685]
-    .float -0.022867, -0.090481, 0.153088, -0.126720, -0.036598, -0.085675, 0.003117, 0.021263, 0.010671, -0.154359  # dense_weights[686]
-    .float 0.009053, -0.098897, 0.032078, 0.036613, 0.113437, -0.081014, 0.001166, 0.015027, 0.052120, -0.026212  # dense_weights[687]
-    .float 0.105075, -0.243170, -0.294468, 0.077157, -0.276274, 0.066070, 0.182161, -0.029508, -0.318972, 0.078974  # dense_weights[688]
-    .float -0.046281, 0.011111, 0.134354, -0.109519, -0.034708, 0.037433, -0.071308, -0.016731, -0.008633, -0.108885  # dense_weights[689]
-    .float -0.021111, -0.117758, 0.053839, 0.072200, 0.037121, 0.128261, -0.138877, 0.002558, -0.019955, -0.080718  # dense_weights[690]
-    .float 0.049241, -0.057143, 0.016842, -0.121153, 0.027764, -0.111233, 0.041670, 0.002705, 0.062977, -0.103055  # dense_weights[691]
-    .float 0.027021, -0.145921, -0.011305, -0.001228, -0.089434, 0.144853, -0.041216, -0.039431, -0.133714, 0.039756  # dense_weights[692]
-    .float 0.069712, -0.044575, -0.005124, -0.089731, 0.083815, -0.002960, 0.026603, -0.028983, -0.101494, -0.048702  # dense_weights[693]
-    .float 0.057712, 0.059206, 0.142560, -0.218033, -0.069378, -0.183784, 0.076267, 0.040320, 0.054392, -0.108184  # dense_weights[694]
-    .float 0.050109, -0.046503, 0.120421, -0.155064, 0.069009, -0.135385, 0.017330, -0.021724, 0.081764, 0.028835  # dense_weights[695]
-    .float 0.122755, -0.168350, -0.264433, 0.136850, -0.071183, 0.040123, 0.195331, 0.070241, -0.321678, 0.073759  # dense_weights[696]
-    .float 0.017407, 0.013816, 0.054568, -0.034542, -0.036245, -0.048969, 0.027966, -0.090780, 0.017142, 0.013779  # dense_weights[697]
-    .float -0.093052, -0.105401, -0.029119, -0.027464, 0.051060, 0.150470, -0.119190, -0.028190, -0.044872, 0.047564  # dense_weights[698]
-    .float 0.069010, -0.035063, 0.065826, -0.201568, -0.152276, -0.124894, 0.018443, 0.063332, 0.139762, -0.020382  # dense_weights[699]
-    .float 0.102956, -0.203696, -0.017028, -0.060195, -0.040496, 0.073965, -0.016212, -0.070235, -0.070894, 0.123548  # dense_weights[700]
-    .float -0.044238, -0.088441, -0.015419, -0.084893, 0.067193, -0.005692, 0.114755, -0.096518, -0.072415, 0.062477  # dense_weights[701]
-    .float 0.110475, -0.053654, 0.138475, -0.202386, -0.180298, -0.271056, 0.098077, 0.197471, 0.139452, -0.267375  # dense_weights[702]
-    .float 0.078746, 0.013998, 0.020751, -0.180368, -0.011910, -0.115529, 0.048382, -0.040807, 0.007210, -0.007916  # dense_weights[703]
-    .float 0.082608, -0.042715, -0.294692, -0.055800, 0.018628, -0.124503, 0.070962, -0.022085, -0.023782, -0.037137  # dense_weights[704]
-    .float -0.045326, -0.100804, -0.002033, 0.042772, -0.047896, 0.046462, -0.071895, -0.117361, -0.053005, 0.099047  # dense_weights[705]
-    .float -0.168416, -0.091405, 0.050801, 0.080129, 0.012296, 0.112992, -0.081037, -0.048718, -0.011334, 0.154787  # dense_weights[706]
-    .float 0.008792, 0.007087, 0.097569, -0.104520, -0.148766, -0.101999, 0.053933, 0.017789, 0.163247, -0.095456  # dense_weights[707]
-    .float 0.030156, -0.280635, 0.009428, -0.086417, -0.060307, 0.087906, 0.052870, -0.191802, 0.045490, 0.059346  # dense_weights[708]
-    .float -0.063975, -0.070644, -0.044756, 0.060469, -0.023831, 0.075318, -0.030878, -0.098189, 0.072272, 0.120810  # dense_weights[709]
-    .float 0.081323, -0.046373, 0.168612, -0.221974, -0.132981, -0.242113, 0.116626, 0.117302, 0.235087, -0.509940  # dense_weights[710]
-    .float 0.070520, -0.111810, 0.085939, -0.169310, 0.024386, -0.014287, 0.112383, -0.161097, -0.019156, -0.024155  # dense_weights[711]
-    .float 0.192791, -0.035735, -0.196214, -0.126052, -0.045496, 0.072921, 0.054964, -0.178026, -0.032432, -0.086060  # dense_weights[712]
-    .float -0.073235, 0.007651, 0.049872, 0.007614, -0.036167, 0.109831, -0.017658, -0.071594, -0.035695, 0.071403  # dense_weights[713]
-    .float -0.148846, 0.030459, 0.036888, 0.118196, -0.035191, 0.057847, -0.043150, -0.074689, -0.069142, 0.129495  # dense_weights[714]
-    .float -0.017885, -0.019323, 0.086637, -0.104635, -0.056133, -0.103677, -0.110145, 0.005817, 0.017178, -0.031456  # dense_weights[715]
-    .float 0.065537, -0.151226, 0.052692, -0.008953, -0.063506, -0.008188, 0.126224, -0.218025, 0.051155, 0.044155  # dense_weights[716]
-    .float -0.226851, 0.076087, 0.063127, 0.022387, 0.057586, -0.002450, -0.040738, -0.130978, 0.066802, 0.068621  # dense_weights[717]
-    .float 0.050587, 0.031454, 0.108342, -0.268849, -0.095708, -0.207381, 0.014893, 0.153335, 0.088399, -0.153457  # dense_weights[718]
-    .float -0.066454, -0.018427, 0.030940, -0.017814, -0.028425, -0.046365, 0.077250, -0.158028, 0.112619, -0.033909  # dense_weights[719]
-    .float -0.112630, 0.014523, 0.043936, -0.014089, -0.187483, 0.081115, -0.004280, -0.183165, 0.040592, -0.137877  # dense_weights[720]
-    .float -0.000270, -0.066564, 0.015447, 0.000559, -0.022339, 0.056596, 0.081040, -0.066973, -0.048448, -0.069472  # dense_weights[721]
-    .float -0.133337, -0.192937, 0.036142, 0.110769, 0.124848, 0.023384, 0.047192, -0.028971, -0.041875, 0.008943  # dense_weights[722]
-    .float 0.019136, -0.091029, 0.031401, -0.181950, -0.023577, 0.017716, -0.065299, -0.008207, -0.190318, 0.066654  # dense_weights[723]
-    .float -0.168080, 0.061911, 0.008168, 0.101724, -0.025591, -0.126004, 0.059622, -0.136629, 0.142893, -0.015879  # dense_weights[724]
-    .float -0.138619, -0.007781, 0.024366, 0.136670, 0.052951, 0.047386, -0.031539, -0.166457, 0.037021, 0.068868  # dense_weights[725]
-    .float 0.107393, 0.081537, 0.112063, -0.208009, -0.000082, -0.052590, 0.023866, 0.108129, -0.196823, -0.042230  # dense_weights[726]
-    .float -0.088374, 0.054218, 0.107735, -0.022789, 0.070264, -0.086606, 0.057276, -0.071166, -0.014015, 0.026520  # dense_weights[727]
-    .float -0.098305, 0.079120, -0.071019, 0.073972, -0.083934, 0.012952, 0.009473, -0.111651, 0.052871, -0.128909  # dense_weights[728]
-    .float 0.086924, -0.097776, 0.005179, 0.114363, -0.064315, 0.010095, 0.015421, 0.069562, -0.040648, -0.113602  # dense_weights[729]
-    .float 0.007332, -0.206704, 0.029362, 0.143178, 0.004757, -0.031409, -0.027181, 0.057644, -0.035194, -0.133252  # dense_weights[730]
-    .float 0.124073, -0.165189, 0.047038, -0.005378, -0.096416, 0.124628, 0.051914, -0.014695, -0.132492, -0.014430  # dense_weights[731]
-    .float -0.089275, 0.098982, 0.037981, -0.004578, 0.033110, -0.028362, -0.009824, -0.042428, 0.050979, 0.032468  # dense_weights[732]
-    .float -0.120290, -0.081199, -0.061293, 0.046180, 0.011037, 0.013775, -0.061183, -0.040885, -0.007623, 0.027326  # dense_weights[733]
-    .float 0.085339, -0.107557, -0.049213, -0.091933, -0.117174, 0.051691, -0.057677, 0.146954, -0.112420, -0.020388  # dense_weights[734]
-    .float -0.001738, -0.054266, 0.016159, -0.103116, 0.066508, 0.005932, 0.035102, 0.036248, -0.027033, 0.024037  # dense_weights[735]
-    .float -0.032105, -0.037563, -0.065591, 0.103753, 0.046665, -0.007496, 0.017522, 0.013231, 0.033407, 0.067695  # dense_weights[736]
-    .float 0.008671, -0.139036, -0.006768, 0.090847, -0.028581, -0.024228, 0.054387, 0.036940, 0.064764, -0.113463  # dense_weights[737]
-    .float 0.032748, -0.097207, 0.073175, 0.065122, 0.059640, -0.007261, 0.029103, 0.134132, 0.029066, -0.101652  # dense_weights[738]
-    .float 0.021313, -0.010896, -0.085657, -0.021372, -0.080185, 0.026603, 0.069843, 0.035875, -0.104853, 0.021041  # dense_weights[739]
-    .float -0.073035, -0.020072, -0.073407, 0.008518, 0.052482, -0.024202, -0.017009, -0.017883, -0.044049, -0.020540  # dense_weights[740]
-    .float -0.018962, -0.254945, 0.028126, 0.075632, -0.004308, 0.046981, 0.057133, 0.006629, -0.011868, -0.065642  # dense_weights[741]
-    .float 0.097429, 0.044270, -0.060025, -0.076312, -0.034615, 0.050813, -0.087837, 0.133274, -0.180023, 0.038426  # dense_weights[742]
-    .float -0.053324, -0.092943, 0.036579, -0.011257, 0.008650, -0.038679, 0.131553, 0.086295, 0.003264, -0.013920  # dense_weights[743]
-    .float -0.003741, -0.027731, -0.160584, 0.000514, 0.002542, 0.062124, 0.062829, 0.062924, -0.039973, -0.023220  # dense_weights[744]
-    .float -0.101063, -0.008638, 0.095667, 0.086432, 0.058129, -0.030850, 0.052133, 0.041539, 0.017921, -0.204034  # dense_weights[745]
-    .float -0.070133, 0.108920, 0.103349, 0.030834, 0.071887, -0.095925, -0.043384, 0.150569, 0.054835, -0.243211  # dense_weights[746]
-    .float 0.043980, 0.012350, -0.007500, -0.017407, -0.037216, -0.013914, 0.067298, 0.068410, -0.129506, -0.010241  # dense_weights[747]
-    .float -0.027491, 0.009999, 0.018250, 0.029832, 0.119048, 0.050293, 0.017460, 0.011462, -0.018467, -0.085097  # dense_weights[748]
-    .float 0.063155, -0.202532, 0.025137, 0.018343, 0.007542, -0.075318, 0.079142, 0.094467, 0.037830, -0.165642  # dense_weights[749]
-    .float 0.161042, 0.064237, -0.164123, -0.053766, -0.066252, 0.028529, 0.003895, 0.031633, -0.121048, 0.140647  # dense_weights[750]
-    .float 0.049141, -0.013522, -0.042568, 0.040051, 0.043702, 0.001086, 0.068105, -0.038698, -0.063928, 0.016599  # dense_weights[751]
-    .float -0.024158, -0.058713, -0.134271, 0.049618, 0.111930, 0.024005, 0.085549, 0.098820, -0.085841, -0.025016  # dense_weights[752]
-    .float 0.010659, 0.108088, 0.063002, -0.035371, 0.058459, -0.047737, -0.084779, -0.108713, -0.016702, -0.189619  # dense_weights[753]
-    .float -0.075700, 0.098996, 0.143418, -0.101475, -0.033206, -0.115621, -0.120733, -0.079461, 0.030853, -0.201732  # dense_weights[754]
-    .float 0.092579, 0.010672, 0.081062, 0.067862, -0.051569, -0.065117, 0.065448, -0.111338, -0.108345, -0.137812  # dense_weights[755]
-    .float -0.068608, 0.002266, -0.053514, -0.077319, -0.062201, 0.003606, 0.008599, 0.064486, -0.017674, -0.068948  # dense_weights[756]
-    .float -0.003612, -0.012309, 0.204005, -0.113839, -0.009950, -0.029712, 0.020791, -0.028872, -0.031896, -0.174634  # dense_weights[757]
-    .float 0.052847, 0.025099, -0.169071, -0.012459, -0.236826, 0.019642, 0.070078, -0.053065, -0.107156, 0.025659  # dense_weights[758]
-    .float 0.005624, 0.024422, 0.027322, 0.003514, 0.009340, -0.066566, 0.018659, -0.036302, -0.001314, 0.008987  # dense_weights[759]
-    .float 0.081222, 0.057382, -0.100991, 0.033760, 0.013651, 0.080412, 0.087201, -0.090095, -0.042188, -0.134509  # dense_weights[760]
-    .float -0.116091, 0.091355, 0.143190, 0.018328, -0.063978, 0.019303, -0.173241, -0.075997, -0.048212, -0.120199  # dense_weights[761]
-    .float -0.116377, -0.006488, 0.186419, -0.091760, -0.093686, -0.096739, -0.138065, -0.041665, 0.096551, -0.186608  # dense_weights[762]
-    .float -0.144179, 0.070924, 0.275928, -0.194344, -0.091691, -0.141134, -0.085904, -0.071427, -0.218821, 0.054045  # dense_weights[763]
-    .float 0.017691, -0.026384, 0.131211, -0.097547, -0.091352, -0.009006, 0.035780, -0.069801, -0.019646, -0.138105  # dense_weights[764]
-    .float 0.060415, 0.097865, 0.297755, -0.078130, -0.122847, -0.155723, -0.044874, 0.017762, -0.132187, -0.286455  # dense_weights[765]
-    .float -0.135235, 0.105403, 0.027489, 0.045634, -0.035694, 0.128067, -0.076732, -0.033273, -0.078175, 0.043347  # dense_weights[766]
-    .float 0.086063, 0.079452, 0.130210, 0.020212, -0.084883, -0.009100, 0.014462, -0.077135, 0.008974, -0.201989  # dense_weights[767]
-    .float -0.037889, 0.091453, 0.045772, -0.058072, -0.142058, 0.189836, -0.051793, 0.071663, -0.057916, -0.034885  # dense_weights[768]
-    .float -0.026378, 0.012578, 0.062154, -0.005394, -0.097808, -0.011753, -0.116566, -0.030262, -0.096219, 0.003817  # dense_weights[769]
-    .float 0.003884, -0.041184, 0.091352, 0.072588, -0.038844, -0.008920, -0.201315, -0.026795, -0.164289, -0.091863  # dense_weights[770]
-    .float -0.063208, -0.130227, 0.072608, 0.051419, -0.074091, -0.049537, -0.165609, -0.027275, -0.090438, -0.029708  # dense_weights[771]
-    .float -0.179390, 0.090394, 0.017388, 0.144761, -0.030114, 0.058851, -0.304941, -0.080967, -0.141958, -0.143306  # dense_weights[772]
-    .float 0.033528, -0.140549, 0.070828, 0.073571, -0.047188, -0.062611, -0.197457, -0.091398, 0.071393, -0.169829  # dense_weights[773]
-    .float -0.030768, -0.004336, 0.164396, -0.003235, -0.079162, -0.002680, -0.171945, -0.026860, -0.020463, -0.088820  # dense_weights[774]
-    .float -0.098618, -0.038339, 0.135550, 0.074383, 0.006657, -0.029658, -0.160816, -0.092271, -0.030614, -0.132709  # dense_weights[775]
-    .float -0.068053, 0.002796, -0.195348, 0.176571, -0.148812, 0.194928, 0.013349, -0.043638, -0.212681, -0.024981  # dense_weights[776]
-    .float -0.058675, -0.031621, 0.002942, 0.022617, -0.055324, 0.098506, -0.067931, -0.015694, -0.006411, -0.020443  # dense_weights[777]
-    .float -0.066295, 0.101806, 0.063041, 0.027173, -0.043613, 0.032093, -0.083684, -0.039345, -0.084501, -0.113667  # dense_weights[778]
-    .float 0.009909, -0.020630, 0.121853, -0.028577, 0.008235, 0.065612, -0.011289, -0.047258, 0.003746, -0.062360  # dense_weights[779]
-    .float -0.151037, 0.111007, 0.031411, 0.109893, -0.095103, 0.089245, -0.254356, -0.092742, -0.163001, 0.017902  # dense_weights[780]
-    .float -0.029148, -0.093983, 0.032263, 0.025616, -0.112493, 0.027675, 0.034857, -0.134375, -0.020851, 0.009229  # dense_weights[781]
-    .float -0.014825, 0.021368, 0.054875, -0.046942, -0.095450, -0.069363, -0.069513, -0.018358, 0.092466, -0.019915  # dense_weights[782]
-    .float -0.001698, -0.002523, 0.014147, 0.047271, 0.074270, -0.074633, -0.096066, -0.106702, 0.070845, -0.011543  # dense_weights[783]
-    .float 0.162369, -0.283389, -0.087191, -0.032024, -0.248825, 0.045443, 0.070743, 0.001722, -0.033327, 0.009165  # dense_weights[784]
-    .float -0.073885, -0.057404, 0.039804, 0.130320, -0.024786, 0.174081, -0.043042, -0.124056, 0.022499, -0.007005  # dense_weights[785]
-    .float -0.015799, 0.021700, -0.047912, 0.110503, 0.053647, 0.089355, -0.102432, 0.015460, -0.134961, 0.026731  # dense_weights[786]
-    .float -0.010091, 0.097468, 0.045401, -0.046656, -0.033089, -0.052926, -0.047459, 0.030333, 0.047330, -0.008832  # dense_weights[787]
-    .float -0.014858, -0.029056, -0.062750, 0.143814, -0.129649, 0.023711, -0.065644, -0.025879, -0.103152, 0.073308  # dense_weights[788]
-    .float 0.051707, -0.013993, 0.046349, 0.028459, 0.034350, -0.016732, -0.001467, -0.013046, 0.007532, -0.008994  # dense_weights[789]
-    .float -0.097406, 0.041840, 0.135445, -0.111160, 0.023313, -0.077501, -0.092235, 0.049182, 0.102689, -0.069052  # dense_weights[790]
-    .float 0.092674, 0.009223, 0.117446, -0.035342, 0.021202, -0.121329, 0.006697, -0.009230, 0.099547, -0.034697  # dense_weights[791]
-    .float 0.112829, -0.194355, -0.046758, -0.029652, -0.141647, -0.064184, 0.174425, 0.079373, 0.113255, -0.061811  # dense_weights[792]
-    .float -0.038531, 0.044701, -0.010122, 0.083882, -0.058342, 0.126821, 0.047211, -0.114699, -0.115224, 0.073917  # dense_weights[793]
-    .float -0.072861, 0.063451, -0.027037, 0.104779, -0.030094, 0.226378, -0.058081, -0.042162, -0.104184, 0.028242  # dense_weights[794]
-    .float -0.082774, -0.036907, 0.055228, -0.063157, -0.101673, -0.005303, 0.054741, -0.089248, 0.042935, -0.072848  # dense_weights[795]
-    .float 0.104062, -0.065912, -0.021244, 0.023452, -0.093322, 0.025533, -0.006650, -0.116683, -0.042078, 0.047341  # dense_weights[796]
-    .float 0.059390, 0.040557, 0.071615, 0.021990, -0.083082, -0.025873, 0.038000, -0.165835, -0.095374, 0.066983  # dense_weights[797]
-    .float 0.035604, -0.010312, 0.175027, -0.189169, -0.095484, -0.183865, -0.023684, 0.008768, 0.068149, -0.116426  # dense_weights[798]
-    .float 0.020426, -0.033411, 0.050123, -0.032645, -0.087125, -0.076645, 0.049076, -0.083249, 0.042972, 0.006652  # dense_weights[799]
-    .float 0.113704, -0.010726, 0.013729, -0.021352, -0.106163, -0.080771, 0.224422, -0.017221, 0.131485, -0.175094  # dense_weights[800]
-    .float 0.016419, 0.044296, -0.000680, -0.013597, -0.117870, 0.192775, 0.051421, -0.058887, -0.057696, 0.030697  # dense_weights[801]
-    .float -0.056705, 0.104394, -0.031239, 0.113927, -0.040084, 0.133942, -0.114514, -0.091207, -0.026728, 0.053996  # dense_weights[802]
-    .float -0.071207, -0.034635, 0.014400, -0.135739, -0.036717, -0.021689, 0.077032, 0.008019, 0.055420, -0.131241  # dense_weights[803]
-    .float 0.116240, -0.179031, 0.088382, 0.017071, -0.211225, 0.040838, 0.130313, -0.183051, 0.085443, -0.011490  # dense_weights[804]
-    .float 0.040852, -0.016299, -0.002508, -0.069433, 0.014765, 0.065773, 0.057793, -0.070585, 0.000037, 0.076596  # dense_weights[805]
-    .float 0.095045, -0.000188, 0.213407, -0.223606, -0.039666, -0.261376, 0.111145, 0.061977, 0.174915, -0.209174  # dense_weights[806]
-    .float 0.056863, -0.068860, 0.037067, -0.089437, -0.008056, 0.010819, 0.074232, -0.096307, 0.030159, -0.010300  # dense_weights[807]
-    .float 0.074513, 0.116755, 0.007253, -0.186598, -0.082967, -0.114146, 0.170363, -0.033088, 0.048740, -0.228037  # dense_weights[808]
-    .float 0.029914, -0.056149, 0.039911, 0.073400, 0.014812, 0.052932, 0.030959, -0.006812, -0.175545, -0.029468  # dense_weights[809]
-    .float 0.000919, -0.022499, 0.068746, 0.129215, -0.112787, 0.170682, 0.016013, -0.098529, -0.140931, 0.003832  # dense_weights[810]
-    .float -0.063988, 0.100605, -0.000451, 0.025607, -0.013203, 0.019253, -0.064740, -0.012720, 0.047563, 0.029735  # dense_weights[811]
-    .float -0.025260, -0.061510, 0.086815, 0.005938, -0.170369, -0.089751, 0.116434, -0.220406, 0.158863, -0.127884  # dense_weights[812]
-    .float -0.014446, 0.053118, 0.012552, 0.080352, 0.049526, -0.062677, 0.014801, -0.030931, -0.078701, 0.071820  # dense_weights[813]
-    .float 0.023614, 0.218427, 0.069233, -0.225265, 0.055364, -0.078997, -0.058396, 0.163702, 0.026627, -0.099711  # dense_weights[814]
-    .float -0.059992, 0.029700, 0.102809, -0.037673, -0.091245, -0.062946, 0.056574, -0.100834, 0.039520, -0.052854  # dense_weights[815]
-    .float -0.169357, 0.075215, -0.057392, -0.010721, -0.123758, -0.007107, -0.036306, 0.016459, 0.048930, -0.099597  # dense_weights[816]
-    .float 0.022958, -0.112159, 0.066675, 0.171779, -0.109208, 0.060351, 0.114103, 0.004482, -0.036865, -0.043868  # dense_weights[817]
-    .float -0.035471, -0.126461, 0.054393, 0.131994, -0.045864, 0.121507, 0.031193, -0.087051, -0.146088, -0.087318  # dense_weights[818]
-    .float 0.010469, -0.103279, -0.013155, 0.076901, -0.090893, 0.113307, -0.018237, -0.083073, -0.051660, -0.072357  # dense_weights[819]
-    .float -0.154412, 0.085916, 0.093022, 0.024130, -0.050360, -0.050767, 0.067903, -0.046378, 0.082210, -0.081405  # dense_weights[820]
-    .float -0.071589, 0.033977, 0.105769, 0.004592, 0.053847, 0.018752, 0.055791, -0.071035, 0.003806, 0.064746  # dense_weights[821]
-    .float 0.016334, 0.065815, 0.081326, -0.187548, -0.014464, 0.055103, -0.174993, 0.106510, -0.136201, -0.049673  # dense_weights[822]
-    .float -0.093772, 0.041132, 0.060585, -0.012537, 0.064564, 0.006724, 0.011011, 0.053753, -0.025956, -0.028654  # dense_weights[823]
-    .float -0.051951, 0.053603, -0.082154, -0.021111, -0.047711, 0.028784, -0.033278, -0.054701, 0.071718, -0.059479  # dense_weights[824]
-    .float 0.073798, 0.071719, 0.031251, 0.064708, -0.124559, 0.060208, -0.010514, -0.099107, 0.040891, -0.100548  # dense_weights[825]
-    .float 0.009952, -0.105505, 0.027546, 0.072027, -0.077391, 0.009728, -0.058895, -0.131833, -0.066024, -0.127065  # dense_weights[826]
-    .float 0.031870, -0.108176, 0.018133, 0.109157, -0.121656, 0.101861, 0.069599, -0.091255, -0.050172, 0.054293  # dense_weights[827]
-    .float -0.033249, 0.072577, 0.033355, 0.005610, -0.015094, -0.078382, 0.053839, -0.046027, 0.024269, -0.025768  # dense_weights[828]
-    .float 0.028866, -0.217091, 0.006266, 0.074543, 0.006004, 0.062015, 0.006842, -0.018928, -0.008839, -0.026659  # dense_weights[829]
-    .float 0.029070, -0.208787, -0.031081, -0.007894, -0.135234, 0.115799, -0.077313, 0.118186, -0.042774, 0.036685  # dense_weights[830]
-    .float -0.041269, -0.093386, 0.015101, 0.029450, 0.096874, 0.035800, 0.067556, -0.032233, -0.013946, 0.057878  # dense_weights[831]
-    .float -0.056736, -0.020034, -0.060435, 0.049807, -0.053857, 0.050049, 0.065646, -0.045627, 0.074033, -0.064381  # dense_weights[832]
-    .float -0.003954, 0.025227, 0.028279, 0.016390, -0.031609, -0.057580, -0.043814, -0.029396, -0.006754, -0.112483  # dense_weights[833]
-    .float -0.038532, 0.110026, 0.252101, 0.033413, -0.059781, 0.055213, -0.063112, -0.080901, -0.080799, -0.228822  # dense_weights[834]
-    .float 0.081672, -0.040479, -0.053352, 0.020689, -0.119075, 0.075149, -0.025605, -0.060672, 0.061169, 0.074631  # dense_weights[835]
-    .float -0.001786, -0.087777, 0.102376, 0.084700, 0.000248, -0.086235, 0.047347, 0.005459, 0.007946, -0.053985  # dense_weights[836]
-    .float 0.014547, -0.120268, 0.110211, 0.112324, -0.031631, 0.040580, 0.035340, -0.088671, -0.040686, -0.155138  # dense_weights[837]
-    .float 0.047284, -0.212917, -0.245514, 0.044393, -0.114537, 0.047068, -0.049026, 0.123735, -0.094434, -0.043273  # dense_weights[838]
-    .float -0.032347, -0.008209, -0.059558, -0.024495, -0.029820, 0.064530, 0.049534, -0.002061, -0.090434, -0.023432  # dense_weights[839]
-    .float -0.064708, 0.134034, 0.027594, 0.033156, 0.024220, 0.064959, 0.056449, -0.026459, 0.023637, -0.059221  # dense_weights[840]
-    .float 0.001616, 0.129880, 0.174038, -0.058029, -0.073268, -0.091979, -0.051508, 0.006066, 0.041036, -0.074054  # dense_weights[841]
-    .float -0.000411, 0.190624, 0.166588, -0.097602, -0.117075, 0.019051, 0.004357, -0.039507, -0.003148, -0.259475  # dense_weights[842]
-    .float 0.030461, -0.001973, -0.081839, 0.121137, -0.134002, 0.090864, 0.062809, -0.027428, 0.041180, -0.112516  # dense_weights[843]
-    .float -0.002384, 0.044554, 0.119168, -0.056890, -0.000203, -0.040764, 0.124537, 0.000556, 0.034144, -0.115770  # dense_weights[844]
-    .float -0.042764, -0.045547, 0.145366, -0.053393, -0.058462, 0.000355, 0.059911, -0.082500, -0.033792, -0.111139  # dense_weights[845]
-    .float 0.119996, -0.239329, -0.213870, 0.112168, -0.260804, 0.056092, -0.032316, -0.019163, -0.011888, -0.044804  # dense_weights[846]
-    .float -0.008532, 0.052248, 0.063299, 0.025496, 0.032909, -0.036600, 0.026119, -0.060917, -0.090568, -0.067783  # dense_weights[847]
-    .float -0.065566, 0.082820, 0.011661, -0.021043, -0.018284, 0.001077, 0.056506, -0.058653, -0.019663, -0.014349  # dense_weights[848]
-    .float -0.103246, 0.034262, 0.095930, -0.077760, -0.096225, 0.025046, -0.152791, -0.177896, -0.049591, -0.128410  # dense_weights[849]
-    .float -0.039351, 0.113266, 0.184755, -0.117968, -0.096355, -0.003272, 0.004000, -0.108781, -0.119774, -0.071082  # dense_weights[850]
-    .float -0.024363, 0.026229, 0.028334, 0.039390, -0.220180, -0.014823, 0.034195, -0.204741, -0.000192, -0.133573  # dense_weights[851]
-    .float 0.043193, 0.034404, 0.029979, 0.027487, -0.052411, -0.010133, -0.025170, -0.009235, -0.073136, -0.058684  # dense_weights[852]
-    .float 0.041479, 0.082238, 0.193687, -0.041597, -0.007326, -0.086825, 0.019732, -0.059817, -0.028685, -0.051459  # dense_weights[853]
-    .float 0.015592, 0.100785, -0.185188, 0.086145, -0.163525, 0.187602, 0.050869, -0.048372, -0.027165, 0.009406  # dense_weights[854]
-    .float -0.050223, 0.044127, 0.036928, 0.066948, -0.056966, 0.059161, 0.076005, -0.007250, -0.006266, -0.066710  # dense_weights[855]
-    .float 0.038359, -0.014664, 0.007768, 0.002266, -0.107535, 0.027952, 0.056595, -0.065030, -0.035535, -0.049174  # dense_weights[856]
-    .float -0.107477, 0.018074, 0.229603, -0.177720, -0.140479, -0.020096, -0.087000, -0.160715, -0.030243, -0.085069  # dense_weights[857]
-    .float -0.224790, 0.097707, 0.233744, -0.150221, -0.093333, -0.108117, -0.116694, -0.176010, -0.088651, -0.028693  # dense_weights[858]
-    .float -0.109710, 0.079909, 0.200374, -0.054095, -0.081432, 0.038593, -0.120108, 0.040676, -0.256361, 0.011736  # dense_weights[859]
-    .float 0.073955, 0.047098, 0.046219, 0.003576, 0.020446, 0.017620, -0.024082, -0.154014, -0.068595, -0.126786  # dense_weights[860]
-    .float -0.093965, 0.018356, 0.174284, -0.024551, -0.132798, -0.116150, -0.104832, -0.119536, 0.038517, -0.212659  # dense_weights[861]
-    .float 0.005394, 0.053492, -0.062184, 0.028744, -0.141698, 0.101367, -0.020118, 0.063738, -0.201608, 0.077970  # dense_weights[862]
-    .float 0.036507, 0.024913, 0.114574, -0.072990, -0.091899, 0.047352, -0.011849, -0.158274, 0.092119, -0.020473  # dense_weights[863]
-    .float -0.047668, 0.039833, 0.116644, 0.003350, -0.081947, 0.171058, -0.100660, 0.053683, -0.165775, 0.038895  # dense_weights[864]
-    .float 0.054089, 0.161195, 0.097807, 0.086377, -0.175755, 0.005819, -0.134845, 0.048494, -0.118173, -0.073414  # dense_weights[865]
-    .float -0.104643, 0.081381, 0.016265, 0.022138, -0.150451, -0.009357, -0.149595, -0.044675, -0.135386, -0.076851  # dense_weights[866]
-    .float -0.070146, 0.095530, 0.107118, -0.047767, -0.081544, -0.047772, -0.088285, -0.013844, 0.012555, -0.023776  # dense_weights[867]
-    .float -0.282511, 0.142066, -0.050162, 0.065627, -0.071318, 0.094841, -0.253387, 0.109139, -0.199996, -0.114560  # dense_weights[868]
-    .float -0.079753, 0.087535, 0.064997, 0.054441, -0.085795, -0.138823, -0.162067, 0.042157, -0.077048, -0.149929  # dense_weights[869]
-    .float -0.049131, -0.020921, 0.021702, 0.030647, -0.039253, -0.017399, -0.128820, 0.046668, 0.023477, 0.016315  # dense_weights[870]
-    .float -0.018084, 0.028200, 0.121490, 0.047622, -0.119677, 0.019250, -0.153237, -0.023706, -0.125661, -0.129570  # dense_weights[871]
-    .float 0.011311, -0.083361, 0.002620, 0.100839, -0.067596, 0.079902, -0.009023, -0.122400, -0.211627, -0.025344  # dense_weights[872]
-    .float 0.035076, 0.082203, -0.008359, -0.004128, -0.010165, 0.009151, -0.130288, -0.010587, 0.034535, -0.035033  # dense_weights[873]
-    .float -0.043379, 0.051404, 0.025346, -0.019293, -0.120973, 0.125338, -0.187236, -0.037407, -0.062482, -0.095127  # dense_weights[874]
-    .float 0.010981, 0.147794, 0.044460, -0.027758, -0.050723, -0.084554, -0.065289, 0.055802, 0.030556, -0.020347  # dense_weights[875]
-    .float -0.020823, 0.058310, -0.119745, 0.076766, 0.043619, 0.090270, -0.304174, 0.076034, -0.062537, -0.019748  # dense_weights[876]
-    .float 0.068892, 0.026290, -0.003863, 0.104886, -0.062425, 0.035689, -0.011211, -0.056075, 0.084518, 0.020650  # dense_weights[877]
-    .float -0.016296, 0.030021, 0.030231, 0.016140, -0.011530, 0.052965, -0.043291, 0.037679, -0.022081, 0.019854  # dense_weights[878]
-    .float 0.069282, -0.033325, 0.018475, -0.033196, -0.027878, 0.015511, -0.021587, -0.038866, -0.029142, -0.129011  # dense_weights[879]
-    .float 0.108530, -0.201920, 0.043061, -0.157646, -0.148446, -0.015393, -0.157966, -0.035712, 0.257511, -0.096680  # dense_weights[880]
-    .float -0.046918, 0.115128, 0.002866, 0.025130, -0.078137, 0.057702, -0.079146, -0.052742, 0.017215, -0.031895  # dense_weights[881]
-    .float -0.072404, 0.145353, -0.025820, 0.045269, 0.042756, 0.105705, -0.137657, 0.001975, -0.102073, 0.061211  # dense_weights[882]
-    .float -0.023115, 0.061593, 0.061175, -0.039771, 0.038958, 0.087483, -0.035195, 0.073657, -0.022505, -0.001656  # dense_weights[883]
-    .float -0.006954, -0.080546, -0.063604, 0.071632, 0.009502, 0.064266, 0.004633, -0.064927, -0.012787, 0.156416  # dense_weights[884]
-    .float 0.057922, -0.015151, 0.079829, 0.065272, -0.112589, 0.074069, -0.023839, -0.145362, -0.083155, 0.062419  # dense_weights[885]
-    .float -0.034373, 0.089644, 0.115173, -0.004127, -0.045674, 0.033230, -0.104696, 0.095892, -0.045156, -0.074276  # dense_weights[886]
-    .float 0.077111, -0.044901, 0.114024, 0.014477, -0.028345, -0.022780, -0.057576, 0.005672, 0.065343, -0.006373  # dense_weights[887]
-    .float 0.232886, -0.070096, 0.036643, -0.185981, -0.062718, -0.210172, 0.149580, -0.206424, 0.263281, -0.085870  # dense_weights[888]
-    .float 0.045776, -0.033147, -0.022539, 0.097993, -0.032154, 0.094510, -0.036954, -0.040035, -0.047533, 0.069737  # dense_weights[889]
-    .float -0.112930, 0.105834, -0.038258, 0.040118, -0.087175, 0.124795, -0.106169, -0.053129, -0.106891, 0.114302  # dense_weights[890]
-    .float 0.023643, -0.020346, -0.024289, -0.052468, -0.037401, 0.038200, -0.013849, 0.008640, -0.014287, 0.029967  # dense_weights[891]
-    .float 0.007268, -0.113213, 0.082347, 0.082114, -0.090596, -0.017969, 0.093911, -0.177878, 0.026808, -0.028654  # dense_weights[892]
-    .float 0.094740, -0.022808, -0.043515, -0.010813, -0.092221, 0.133432, 0.066042, -0.215599, -0.055396, -0.080199  # dense_weights[893]
-    .float 0.074694, -0.056516, 0.024399, -0.151294, 0.041701, -0.010641, -0.052315, 0.039823, -0.053956, -0.002556  # dense_weights[894]
-    .float 0.047440, 0.000351, 0.123039, 0.008317, 0.021508, -0.047632, 0.080055, -0.070168, -0.028637, -0.085009  # dense_weights[895]
-    .float 0.147953, -0.046791, 0.065717, -0.268006, -0.061448, -0.136355, 0.167505, 0.047261, 0.195547, -0.048275  # dense_weights[896]
-    .float -0.035952, -0.022434, -0.064703, 0.062161, -0.112965, 0.167177, 0.012578, -0.042303, -0.011740, 0.003750  # dense_weights[897]
-    .float -0.013734, 0.051814, -0.029839, 0.126021, -0.011962, 0.169295, -0.042595, -0.071839, -0.101436, -0.005067  # dense_weights[898]
-    .float -0.044444, -0.050739, -0.020426, 0.018077, 0.037519, 0.050721, 0.045557, -0.042304, -0.065683, -0.012091  # dense_weights[899]
-    .float 0.103455, -0.205595, 0.126426, 0.025598, -0.164074, -0.030952, 0.068226, -0.254433, 0.166280, -0.050718  # dense_weights[900]
-    .float 0.100046, 0.009522, -0.055607, -0.013602, -0.107878, 0.106348, 0.065793, -0.173373, -0.062286, 0.026531  # dense_weights[901]
-    .float 0.028897, 0.065627, 0.081993, -0.245791, 0.072271, -0.045913, -0.117566, 0.034900, 0.038378, -0.005214  # dense_weights[902]
-    .float 0.053272, 0.014400, 0.099704, 0.038089, -0.064396, 0.050885, 0.049985, -0.115199, 0.050790, -0.040508  # dense_weights[903]
-    .float 0.012894, 0.161379, 0.047912, -0.315671, 0.019124, -0.097286, 0.033511, 0.067370, 0.132215, -0.037282  # dense_weights[904]
-    .float -0.011758, -0.108929, -0.040513, 0.076000, -0.076275, 0.082298, 0.085229, -0.113778, -0.066843, 0.016571  # dense_weights[905]
-    .float 0.056321, -0.052295, -0.063495, 0.049762, -0.084872, 0.093348, -0.085767, -0.068998, -0.014026, 0.089054  # dense_weights[906]
-    .float -0.084713, -0.144456, -0.038356, 0.011896, 0.006582, -0.006106, 0.019234, 0.027955, 0.097507, -0.033808  # dense_weights[907]
-    .float 0.079575, -0.048888, 0.094742, -0.089377, -0.113328, 0.022127, 0.094715, -0.126414, 0.040175, 0.002508  # dense_weights[908]
-    .float 0.083431, -0.057638, 0.052393, -0.003745, -0.050086, 0.005342, 0.177456, -0.146409, -0.041019, -0.067540  # dense_weights[909]
-    .float -0.272029, 0.104335, -0.067282, -0.158903, 0.027186, 0.025098, -0.274143, 0.091851, -0.033426, 0.120104  # dense_weights[910]
-    .float -0.051767, -0.034135, -0.002072, 0.028394, -0.096508, 0.017082, 0.123846, -0.043584, -0.079446, -0.039966  # dense_weights[911]
-    .float -0.093167, 0.014026, -0.041471, -0.142734, 0.022582, -0.086135, 0.005263, 0.100020, 0.038488, -0.047825  # dense_weights[912]
-    .float 0.014382, -0.098495, -0.020127, 0.087351, -0.188539, 0.058427, 0.041399, -0.196821, 0.004005, 0.011905  # dense_weights[913]
-    .float 0.035071, -0.121616, 0.029385, 0.061907, -0.164622, 0.037816, -0.051531, -0.131649, -0.009714, 0.107296  # dense_weights[914]
-    .float -0.063941, -0.015441, -0.102385, 0.073853, -0.012065, 0.016987, -0.150679, -0.110831, 0.051222, -0.006154  # dense_weights[915]
-    .float -0.013165, 0.104747, 0.105841, -0.019732, -0.109591, -0.018956, 0.039943, 0.036450, 0.005088, -0.066847  # dense_weights[916]
-    .float -0.060830, -0.036956, -0.015725, -0.015680, -0.065105, 0.061752, 0.123148, -0.023796, 0.015536, -0.034758  # dense_weights[917]
-    .float -0.185238, 0.001861, -0.147090, -0.002128, 0.043232, 0.043661, -0.273441, 0.160974, -0.092615, 0.107771  # dense_weights[918]
-    .float -0.048274, -0.043489, 0.008716, -0.022573, -0.093509, 0.061331, 0.068974, -0.038339, 0.013759, 0.018174  # dense_weights[919]
-    .float -0.048292, -0.011132, -0.042951, -0.065974, 0.030567, -0.071052, -0.073047, -0.012772, 0.032283, -0.003217  # dense_weights[920]
-    .float 0.052039, 0.026614, 0.091071, 0.023856, -0.134966, -0.021939, 0.056841, -0.146593, 0.064470, -0.103763  # dense_weights[921]
-    .float 0.063793, -0.096011, 0.068031, 0.027083, -0.254410, 0.120853, 0.057403, -0.160108, -0.061883, -0.036971  # dense_weights[922]
-    .float -0.022915, -0.218872, -0.091155, 0.023718, -0.075451, 0.100763, -0.100509, -0.126739, 0.063290, -0.048045  # dense_weights[923]
-    .float 0.036309, 0.047295, -0.000137, 0.038803, -0.005991, -0.063807, 0.121380, -0.080653, -0.052112, -0.073467  # dense_weights[924]
-    .float -0.024853, 0.000744, 0.173220, 0.085302, -0.083032, -0.063453, 0.146380, -0.180093, -0.015389, -0.175879  # dense_weights[925]
-    .float -0.098281, -0.087106, -0.322632, -0.012769, 0.029471, 0.129220, -0.157706, 0.018041, -0.035463, 0.005420  # dense_weights[926]
-    .float 0.012842, 0.004699, -0.032540, 0.077281, 0.000595, -0.057025, 0.082192, -0.000458, 0.073578, -0.108326  # dense_weights[927]
-    .float -0.048287, 0.047187, 0.044955, 0.056658, -0.002515, -0.016989, 0.054885, -0.090060, -0.028479, -0.018632  # dense_weights[928]
-    .float -0.017166, 0.115428, 0.167172, 0.023717, -0.089680, -0.029341, -0.061640, -0.142817, -0.053175, -0.117023  # dense_weights[929]
-    .float -0.000785, -0.022621, 0.177524, 0.036417, -0.109480, -0.021969, -0.021294, -0.120421, -0.082741, -0.108551  # dense_weights[930]
-    .float -0.001945, -0.140215, -0.050028, 0.072734, -0.074604, -0.001008, -0.051059, -0.040933, 0.025894, 0.026532  # dense_weights[931]
-    .float -0.053521, 0.009002, 0.047529, 0.035682, 0.062571, -0.024314, 0.147471, -0.039267, 0.055588, -0.113975  # dense_weights[932]
-    .float -0.099378, 0.063299, 0.085549, -0.024893, -0.099766, -0.034527, 0.041887, -0.237409, -0.007870, -0.164220  # dense_weights[933]
-    .float -0.080459, -0.142159, -0.378062, 0.052192, -0.018594, 0.060171, -0.136075, 0.047703, 0.022557, -0.041841  # dense_weights[934]
-    .float -0.028184, 0.126455, 0.067988, 0.085812, 0.001676, 0.031994, 0.083750, -0.050005, 0.014258, -0.089967  # dense_weights[935]
-    .float -0.053497, 0.116589, 0.181941, 0.047487, 0.010510, -0.043086, 0.055572, -0.141465, -0.008404, -0.089622  # dense_weights[936]
-    .float -0.068902, 0.070796, 0.210392, -0.074824, 0.019218, -0.013967, -0.030473, -0.135127, -0.032002, -0.051183  # dense_weights[937]
-    .float 0.017299, 0.015610, 0.268921, 0.022339, -0.095344, 0.058300, -0.007068, -0.135632, -0.048741, -0.209837  # dense_weights[938]
-    .float 0.092312, -0.207178, -0.038393, 0.081277, -0.102761, 0.132271, -0.039611, -0.172255, -0.027989, -0.025046  # dense_weights[939]
-    .float 0.023171, 0.075607, 0.002690, 0.013368, -0.036646, -0.062209, 0.112389, -0.120748, 0.041217, -0.048517  # dense_weights[940]
-    .float -0.008761, 0.082313, 0.116862, -0.025959, -0.089161, 0.011832, -0.028910, -0.153008, -0.061680, -0.070895  # dense_weights[941]
-    .float -0.006486, -0.050824, -0.385600, 0.031985, -0.053649, 0.081265, -0.159512, 0.044925, 0.108273, 0.029208  # dense_weights[942]
-    .float -0.036013, 0.111335, 0.082236, -0.061498, 0.048544, 0.055274, 0.086937, -0.121564, 0.051752, -0.068949  # dense_weights[943]
-    .float -0.083711, 0.007573, -0.031352, -0.021719, 0.057275, 0.040256, -0.018733, -0.033588, 0.030123, 0.041761  # dense_weights[944]
-    .float -0.014023, 0.037088, 0.144593, -0.149285, -0.008407, -0.067693, -0.124458, -0.255759, -0.063094, -0.007767  # dense_weights[945]
-    .float -0.033591, 0.027537, 0.224117, -0.225788, 0.028527, -0.066955, -0.059406, -0.212657, -0.162963, -0.037153  # dense_weights[946]
-    .float -0.136410, -0.062680, 0.039375, 0.049515, 0.015933, 0.110867, -0.136025, -0.039287, -0.057505, -0.065012  # dense_weights[947]
-    .float 0.030625, 0.082912, 0.030510, -0.068640, 0.032353, 0.014768, -0.059753, -0.190764, -0.024222, 0.065575  # dense_weights[948]
-    .float -0.006085, 0.124208, 0.123359, -0.092847, -0.069841, 0.037709, -0.107607, -0.158215, 0.024717, -0.121331  # dense_weights[949]
-    .float -0.170924, 0.090360, -0.223676, -0.006740, -0.069121, 0.282070, -0.130983, 0.023168, -0.122718, 0.077829  # dense_weights[950]
-    .float -0.025120, 0.109921, -0.036842, -0.063078, 0.044488, 0.000429, -0.061936, -0.098462, 0.043294, 0.040234  # dense_weights[951]
-    .float -0.005690, 0.016887, -0.087216, -0.051223, -0.093023, 0.009545, 0.056099, -0.169571, 0.057219, 0.036774  # dense_weights[952]
-    .float -0.051760, -0.066471, 0.184870, -0.117688, -0.141877, 0.028347, -0.104240, -0.121223, -0.062670, 0.041065  # dense_weights[953]
-    .float -0.089115, -0.060171, 0.287201, -0.273670, 0.020314, -0.082770, -0.205322, -0.143499, -0.241670, 0.118194  # dense_weights[954]
-    .float -0.120935, 0.003828, 0.017657, 0.022269, -0.108322, 0.179276, -0.086699, -0.041384, -0.219292, 0.044558  # dense_weights[955]
-    .float -0.015385, -0.014883, 0.025846, -0.087639, -0.017859, 0.009843, -0.032687, -0.157609, 0.086660, 0.006624  # dense_weights[956]
-    .float -0.058072, 0.046590, 0.061019, -0.100831, -0.120699, -0.024626, -0.085289, -0.156902, 0.032176, 0.030354  # dense_weights[957]
-    .float -0.008426, 0.007903, -0.072233, 0.016684, -0.042710, 0.171233, -0.038687, 0.115931, -0.178926, -0.014596  # dense_weights[958]
-    .float -0.052892, -0.052388, 0.005788, -0.047189, -0.056395, 0.076117, -0.021798, -0.172402, 0.084982, 0.027152  # dense_weights[959]
-    .float -0.020345, -0.029447, 0.006621, 0.037328, -0.056388, 0.138650, -0.064064, -0.016230, -0.077837, -0.070698  # dense_weights[960]
-    .float -0.024128, -0.042395, -0.025402, 0.183274, -0.106726, 0.034483, -0.082920, 0.077111, -0.224620, 0.036768  # dense_weights[961]
-    .float -0.106824, -0.051684, -0.019631, 0.205670, -0.190756, 0.109468, -0.177956, 0.036870, -0.227820, 0.005232  # dense_weights[962]
-    .float 0.020610, 0.125782, -0.009487, 0.050565, -0.134762, 0.024869, -0.195291, 0.048447, -0.036656, -0.001724  # dense_weights[963]
-    .float -0.094187, -0.160272, -0.283978, 0.189721, 0.020494, 0.055455, -0.034542, 0.129662, -0.323212, -0.082148  # dense_weights[964]
-    .float -0.071650, 0.188100, 0.078152, -0.024051, -0.005788, -0.057911, -0.262126, 0.000997, -0.047365, 0.006827  # dense_weights[965]
-    .float 0.035051, 0.108522, 0.044413, 0.057880, -0.156774, -0.041459, -0.191048, 0.061647, -0.014162, 0.036891  # dense_weights[966]
-    .float -0.097664, 0.036136, 0.107329, 0.039321, -0.000729, -0.015568, -0.102827, -0.133937, -0.068869, 0.019235  # dense_weights[967]
-    .float -0.017215, 0.047979, 0.087723, 0.001725, -0.108526, 0.129093, -0.010293, -0.104403, -0.095439, -0.030097  # dense_weights[968]
-    .float -0.145004, 0.070500, -0.095403, 0.081302, -0.014031, 0.018910, -0.137323, 0.112765, -0.090360, 0.043446  # dense_weights[969]
-    .float -0.113384, 0.003932, -0.104432, 0.110170, -0.020670, 0.090967, -0.077167, 0.032070, -0.143757, -0.031654  # dense_weights[970]
-    .float -0.045169, 0.104862, 0.019689, -0.041238, -0.003401, -0.060095, -0.200483, 0.188356, -0.082499, 0.057833  # dense_weights[971]
-    .float -0.050072, -0.109548, -0.117893, 0.149007, -0.005613, 0.009760, -0.190234, 0.162395, -0.241623, -0.017584  # dense_weights[972]
-    .float 0.010373, 0.051931, -0.028491, 0.025049, -0.050145, -0.149914, -0.138961, 0.002257, 0.014500, -0.035088  # dense_weights[973]
-    .float 0.000273, 0.112750, -0.052765, 0.038560, -0.127207, -0.026442, -0.163608, 0.175379, 0.022676, 0.027477  # dense_weights[974]
-    .float 0.021217, -0.005593, 0.069918, 0.037465, -0.035235, -0.035841, -0.176341, 0.043224, 0.033804, 0.039331  # dense_weights[975]
-    .float 0.081466, 0.029779, 0.006911, -0.015956, -0.092774, 0.115433, -0.143831, 0.016280, 0.000888, -0.174446  # dense_weights[976]
-    .float -0.062598, 0.073427, -0.137804, 0.161451, 0.024018, 0.145712, -0.197717, 0.110564, -0.083773, 0.025942  # dense_weights[977]
-    .float -0.065606, -0.030797, -0.012657, 0.262321, -0.023772, 0.197826, -0.047984, 0.006296, -0.106863, 0.070335  # dense_weights[978]
-    .float -0.023476, 0.020189, -0.065165, 0.020854, -0.015733, 0.001299, -0.041637, 0.070383, -0.000310, 0.042409  # dense_weights[979]
-    .float 0.046797, -0.093252, 0.073498, 0.078302, -0.054229, 0.051831, -0.174031, -0.066415, 0.077808, 0.035425  # dense_weights[980]
-    .float 0.033471, 0.111357, -0.027609, 0.004015, -0.067194, -0.079685, -0.113430, -0.083793, 0.056350, -0.015996  # dense_weights[981]
-    .float -0.093833, -0.011708, 0.068209, 0.027012, -0.019021, 0.064292, -0.116916, 0.148804, -0.086661, -0.003908  # dense_weights[982]
-    .float 0.024115, 0.047800, 0.065662, 0.087722, 0.034524, 0.020256, -0.083566, 0.041624, 0.036500, -0.016937  # dense_weights[983]
-    .float 0.053388, 0.103889, 0.012023, -0.125425, 0.215075, -0.089138, -0.256103, 0.062102, 0.202836, -0.247175  # dense_weights[984]
-    .float -0.072141, -0.035829, -0.129177, 0.017960, 0.005786, 0.123214, -0.301533, -0.003042, -0.125096, 0.064785  # dense_weights[985]
-    .float -0.082497, -0.111280, -0.134427, 0.169811, -0.115100, 0.115497, 0.002283, -0.050856, -0.086153, 0.084217  # dense_weights[986]
-    .float -0.071085, -0.066243, -0.040587, 0.063227, 0.032699, 0.132494, -0.059759, -0.016313, -0.077270, 0.014738  # dense_weights[987]
-    .float -0.019203, -0.154098, 0.024925, 0.080051, -0.082726, 0.071208, -0.045378, -0.152154, 0.072440, -0.118911  # dense_weights[988]
-    .float 0.006159, 0.067695, 0.072269, 0.073969, 0.037924, -0.016702, -0.092698, -0.145468, 0.015291, -0.032801  # dense_weights[989]
-    .float -0.066965, 0.080298, -0.037008, -0.071101, 0.040635, 0.005521, -0.084373, 0.056777, -0.195438, 0.020653  # dense_weights[990]
-    .float 0.039012, 0.026344, 0.052190, 0.079481, -0.100118, -0.002620, -0.066441, -0.057651, 0.028903, -0.010768  # dense_weights[991]
-    .float 0.032671, 0.299362, -0.143243, -0.278202, 0.188087, -0.026312, -0.077183, 0.193916, 0.115058, -0.080003  # dense_weights[992]
-    .float -0.063124, -0.134766, -0.021766, 0.091655, -0.057614, 0.172142, -0.221619, -0.039264, 0.022762, -0.031843  # dense_weights[993]
-    .float 0.007948, -0.113145, -0.033925, 0.212111, -0.121012, 0.181613, -0.143800, -0.013925, -0.007155, 0.011526  # dense_weights[994]
-    .float -0.050008, 0.028855, -0.111645, 0.083766, -0.081340, 0.010801, -0.081975, 0.075698, -0.087692, 0.056508  # dense_weights[995]
-    .float 0.054803, -0.129537, 0.133694, 0.096194, -0.140962, -0.009177, 0.029942, -0.159694, 0.062791, -0.107192  # dense_weights[996]
-    .float 0.126085, 0.006680, -0.026165, -0.007623, -0.159859, -0.001065, 0.060300, -0.068179, 0.065751, -0.046874  # dense_weights[997]
-    .float -0.064310, 0.027691, -0.043446, 0.025269, 0.054320, 0.005404, -0.130517, 0.101122, -0.137157, -0.002845  # dense_weights[998]
-    .float 0.110584, -0.051570, 0.070325, 0.084515, -0.022309, 0.077075, 0.020539, -0.019605, 0.017309, -0.052714  # dense_weights[999]
-    .float -0.101139, 0.202987, -0.134113, -0.277193, 0.131213, -0.202287, -0.125340, 0.185331, 0.049470, -0.017771  # dense_weights[1000]
-    .float 0.018630, -0.093662, 0.038253, 0.111817, -0.106852, 0.058214, 0.000716, -0.059834, 0.059663, 0.030828  # dense_weights[1001]
-    .float 0.063832, -0.222752, 0.021430, 0.083311, -0.033221, 0.116811, -0.035248, -0.056592, -0.047691, 0.018595  # dense_weights[1002]
-    .float -0.094364, 0.077061, -0.079259, 0.071351, -0.058957, 0.040492, -0.021145, -0.022897, 0.083704, -0.091169  # dense_weights[1003]
-    .float 0.066012, -0.087871, 0.082101, 0.041609, -0.011410, 0.006668, 0.101855, -0.084630, 0.035135, -0.171710  # dense_weights[1004]
-    .float 0.086987, -0.034866, -0.086940, 0.033803, -0.078965, 0.023439, 0.052803, -0.130347, 0.016751, -0.136622  # dense_weights[1005]
-    .float -0.308219, 0.147903, -0.126441, -0.026169, 0.094889, 0.003314, -0.274363, 0.106650, -0.236742, 0.049642  # dense_weights[1006]
-    .float 0.096296, 0.028946, -0.084783, 0.049465, -0.052990, 0.082381, 0.023327, 0.036663, -0.004077, -0.002219  # dense_weights[1007]
-    .float -0.075840, 0.040414, -0.064826, -0.101516, 0.191744, -0.138541, -0.160942, 0.181695, 0.051984, -0.032734  # dense_weights[1008]
-    .float 0.070166, -0.213646, 0.027060, -0.008602, -0.158607, 0.158930, -0.004277, -0.140237, 0.040039, -0.073344  # dense_weights[1009]
-    .float 0.065261, -0.288846, 0.103838, 0.153032, -0.133465, 0.133970, -0.045305, -0.058289, 0.011227, 0.029764  # dense_weights[1010]
-    .float -0.079921, 0.061264, -0.115924, 0.037013, 0.094720, 0.061012, -0.240005, 0.036756, -0.033745, -0.003643  # dense_weights[1011]
-    .float -0.005344, -0.080484, -0.043894, 0.097381, 0.007019, -0.009411, 0.045707, -0.066768, 0.057305, -0.157305  # dense_weights[1012]
-    .float -0.015839, 0.095901, -0.022686, 0.036666, 0.002594, -0.026990, 0.122338, -0.032125, 0.074290, -0.159908  # dense_weights[1013]
-    .float -0.441176, -0.002214, -0.270033, -0.014049, 0.158245, -0.001116, -0.538363, 0.168852, -0.285252, 0.043146  # dense_weights[1014]
-    .float 0.007563, 0.032550, -0.080045, 0.005807, -0.067760, -0.012518, 0.081505, -0.055294, 0.081782, -0.031006  # dense_weights[1015]
-    .float -0.128405, -0.038207, -0.010383, -0.088469, 0.121430, -0.105588, 0.010186, 0.082038, -0.064915, 0.002140  # dense_weights[1016]
-    .float 0.097061, -0.010722, 0.066458, 0.038055, -0.072286, 0.071319, 0.049676, -0.129696, -0.000552, -0.023149  # dense_weights[1017]
-    .float 0.022279, -0.172889, 0.125386, 0.126711, -0.156245, 0.044950, 0.028078, -0.159481, 0.070739, -0.103530  # dense_weights[1018]
-    .float -0.139233, 0.053064, -0.038122, 0.127835, 0.050250, 0.093253, -0.301382, -0.006296, 0.074979, 0.005537  # dense_weights[1019]
-    .float 0.080834, -0.067796, 0.082176, 0.011186, -0.011315, 0.035640, 0.079791, -0.016942, -0.000125, -0.096444  # dense_weights[1020]
-    .float -0.052057, 0.137469, 0.030454, 0.054339, 0.009383, 0.065608, 0.037304, -0.073583, 0.039842, -0.129577  # dense_weights[1021]
-    .float -0.297772, 0.101099, -0.250076, 0.136088, 0.165742, -0.011664, -0.396088, 0.095847, -0.229388, 0.016981  # dense_weights[1022]
-    .float 0.041174, 0.119771, -0.049955, 0.049607, -0.066810, -0.006835, -0.023351, -0.003151, 0.103253, -0.117777  # dense_weights[1023]
-    .float -0.136317, 0.033914, 0.124385, 0.015958, 0.116842, -0.073246, -0.004992, 0.030744, -0.036265, -0.002616  # dense_weights[1024]
-    .float -0.018484, 0.020977, 0.129658, -0.040204, -0.032867, -0.005928, 0.045637, -0.098576, -0.040167, -0.042325  # dense_weights[1025]
-    .float -0.024353, -0.161640, 0.129035, 0.056079, -0.159525, 0.045205, -0.035875, -0.197529, 0.005767, 0.049922  # dense_weights[1026]
-    .float -0.137323, -0.003456, -0.026781, 0.028814, 0.108708, 0.066856, -0.209801, -0.010396, 0.043243, -0.057997  # dense_weights[1027]
-    .float -0.119236, 0.082217, 0.039170, 0.071284, -0.057051, -0.091494, 0.018093, -0.021088, 0.099232, -0.003989  # dense_weights[1028]
-    .float -0.063512, 0.191752, 0.134872, -0.002460, 0.045497, -0.071685, -0.064263, -0.095150, 0.021104, -0.116901  # dense_weights[1029]
-    .float -0.265681, -0.006821, -0.183883, 0.085218, 0.086153, 0.026045, -0.375442, 0.009530, -0.031816, 0.097283  # dense_weights[1030]
-    .float 0.001621, 0.120750, -0.015834, -0.046721, -0.000751, 0.070639, 0.009519, -0.130777, 0.046284, 0.047451  # dense_weights[1031]
-    .float -0.159856, 0.186376, 0.054516, -0.079813, 0.031529, -0.073120, -0.002388, -0.015078, 0.013356, 0.013711  # dense_weights[1032]
-    .float -0.037949, 0.004399, 0.186670, -0.066025, 0.008095, -0.053660, -0.019238, -0.157620, -0.006423, 0.042068  # dense_weights[1033]
-    .float -0.032191, -0.086285, 0.264715, -0.017481, -0.044489, -0.054248, -0.059477, -0.210940, -0.009055, -0.019521  # dense_weights[1034]
-    .float -0.198073, -0.029020, -0.048361, -0.082458, 0.018716, 0.073221, -0.179674, -0.125355, 0.088147, 0.085250  # dense_weights[1035]
-    .float -0.085871, 0.113175, 0.057383, -0.066265, 0.012405, -0.037825, 0.033016, -0.137719, 0.074365, 0.030542  # dense_weights[1036]
-    .float -0.095595, 0.081338, 0.032618, -0.135710, 0.099564, -0.002550, 0.034676, -0.229426, 0.059792, 0.017510  # dense_weights[1037]
-    .float -0.196521, -0.098647, -0.142698, 0.116102, -0.035685, 0.137430, -0.169755, 0.096476, 0.014444, 0.054829  # dense_weights[1038]
-    .float -0.128922, 0.069911, 0.016368, 0.048944, -0.041310, -0.063325, -0.030482, -0.096184, 0.034139, 0.081062  # dense_weights[1039]
-    .float -0.120950, 0.052531, -0.071555, 0.038629, 0.011897, -0.040573, 0.062016, -0.084379, -0.019102, -0.017521  # dense_weights[1040]
-    .float -0.126230, 0.067229, 0.234574, -0.202773, -0.017548, 0.005946, -0.121039, -0.065323, -0.038069, 0.054246  # dense_weights[1041]
-    .float -0.124491, -0.169455, 0.274462, -0.139711, -0.019278, -0.036824, -0.203967, -0.197605, -0.201616, 0.021050  # dense_weights[1042]
-    .float -0.167297, 0.073560, 0.012266, 0.035366, -0.042506, 0.232358, -0.208919, -0.000716, -0.127315, 0.060943  # dense_weights[1043]
-    .float -0.052453, 0.069525, 0.068606, -0.007266, 0.071072, 0.020092, -0.094478, -0.152979, 0.097245, 0.058059  # dense_weights[1044]
-    .float -0.019045, 0.100644, -0.041962, -0.145307, 0.082238, 0.080078, 0.006123, -0.204066, -0.028661, -0.038813  # dense_weights[1045]
-    .float -0.226088, 0.008865, 0.046620, 0.051625, -0.164151, 0.165642, -0.145207, -0.013875, -0.063342, 0.070224  # dense_weights[1046]
-    .float -0.016160, 0.044289, 0.025350, -0.120768, -0.038027, -0.031902, 0.002686, -0.137541, 0.045004, -0.005045  # dense_weights[1047]
-    .float -0.084027, 0.037122, -0.047769, -0.015446, -0.006741, 0.124817, -0.073403, -0.187564, -0.004723, 0.002540  # dense_weights[1048]
-    .float -0.042776, -0.025396, 0.189707, -0.025008, -0.035402, -0.005526, -0.083936, -0.096543, -0.162812, 0.059486  # dense_weights[1049]
-    .float -0.088452, -0.076954, 0.196878, -0.135398, -0.067635, -0.015992, -0.205827, -0.085468, -0.096926, 0.134423  # dense_weights[1050]
-    .float -0.129030, 0.081578, 0.041599, 0.008180, 0.008627, 0.064157, -0.075461, -0.020961, -0.118897, -0.042773  # dense_weights[1051]
-    .float -0.138075, -0.062287, 0.019078, -0.097435, -0.054603, 0.012035, -0.088160, -0.224648, 0.025423, 0.086297  # dense_weights[1052]
-    .float -0.030326, 0.061590, 0.024563, -0.085310, 0.006935, 0.048402, 0.004620, -0.203550, 0.009045, 0.102964  # dense_weights[1053]
-    .float -0.084554, 0.047861, 0.006067, 0.019003, -0.101701, 0.097773, -0.026646, 0.061034, -0.066366, -0.000213  # dense_weights[1054]
-    .float -0.105125, 0.089098, -0.028425, -0.014004, 0.019549, 0.029789, -0.029723, -0.106014, 0.050076, 0.013664  # dense_weights[1055]
-    .float -0.119966, 0.047722, 0.046261, 0.051701, -0.116871, 0.170617, -0.075934, 0.068999, -0.105368, -0.010315  # dense_weights[1056]
-    .float -0.001625, -0.047317, -0.012776, 0.088042, -0.054706, 0.135587, -0.089719, 0.004324, -0.192175, 0.069348  # dense_weights[1057]
-    .float -0.027851, -0.009571, 0.051177, 0.040888, -0.102086, 0.118069, -0.080087, 0.021515, -0.100470, 0.085827  # dense_weights[1058]
-    .float -0.116602, -0.003849, -0.053536, -0.015115, -0.108471, 0.094939, -0.024110, 0.103161, -0.211292, 0.060926  # dense_weights[1059]
-    .float -0.076001, 0.005240, -0.137722, -0.018521, 0.000869, 0.067323, -0.012990, -0.101653, -0.263165, 0.110090  # dense_weights[1060]
-    .float -0.115808, -0.010567, -0.064463, 0.084782, -0.045469, -0.023694, -0.071680, 0.088725, -0.170656, 0.076836  # dense_weights[1061]
-    .float -0.050138, 0.066893, 0.000006, 0.078164, -0.092624, 0.181408, -0.106397, 0.125169, -0.230308, 0.078248  # dense_weights[1062]
-    .float -0.025520, 0.105018, -0.000108, 0.055150, -0.084539, 0.037828, -0.192630, 0.033351, -0.132823, -0.030175  # dense_weights[1063]
-    .float -0.166912, 0.044674, 0.002012, -0.016534, -0.028399, 0.244266, -0.067011, -0.017223, -0.059609, -0.011396  # dense_weights[1064]
-    .float -0.039537, -0.080922, -0.200724, 0.184326, -0.170060, 0.000703, -0.083380, 0.051827, -0.188750, 0.111001  # dense_weights[1065]
-    .float -0.042607, 0.061758, 0.014873, 0.104665, -0.068119, -0.014233, -0.108092, 0.005468, -0.111865, 0.089194  # dense_weights[1066]
-    .float -0.050812, -0.101236, -0.030886, 0.023258, -0.076212, -0.030178, -0.145208, 0.096865, -0.109681, 0.126555  # dense_weights[1067]
-    .float -0.141745, -0.038397, 0.036034, 0.123965, -0.073908, -0.014610, -0.035268, -0.115086, -0.076135, 0.093373  # dense_weights[1068]
-    .float -0.093130, -0.003078, -0.061545, 0.096377, -0.047436, -0.069664, -0.266142, 0.154462, -0.065250, 0.063991  # dense_weights[1069]
-    .float -0.020364, -0.037876, -0.042681, 0.013415, -0.009346, -0.092902, -0.191007, 0.155748, -0.106157, 0.115747  # dense_weights[1070]
-    .float 0.030788, 0.049570, 0.036996, 0.060133, -0.016178, -0.085392, -0.257318, 0.065537, -0.010382, -0.045013  # dense_weights[1071]
-    .float -0.152579, 0.084541, -0.042878, -0.068064, 0.025225, 0.088384, -0.022446, 0.233625, -0.200702, -0.002568  # dense_weights[1072]
-    .float -0.227864, -0.102600, -0.211900, 0.241012, -0.109283, 0.007037, -0.157490, 0.157763, -0.178885, 0.188024  # dense_weights[1073]
-    .float -0.010017, 0.020522, -0.044835, 0.198181, -0.130885, -0.001981, -0.036965, -0.018791, -0.121051, 0.082499  # dense_weights[1074]
-    .float -0.080114, -0.104072, -0.066458, 0.047498, -0.015697, -0.032444, -0.182392, 0.010351, -0.114773, 0.066009  # dense_weights[1075]
-    .float -0.059306, 0.087405, -0.014170, 0.199350, -0.079603, -0.169430, -0.164461, 0.096861, -0.171584, -0.069304  # dense_weights[1076]
-    .float 0.028901, -0.013864, -0.030025, 0.097035, -0.011751, -0.105582, -0.220611, 0.143223, -0.005508, -0.007772  # dense_weights[1077]
-    .float -0.182304, -0.047890, -0.142994, 0.085140, 0.031950, 0.006441, -0.166745, 0.024666, -0.109609, 0.097226  # dense_weights[1078]
-    .float 0.084242, 0.040832, 0.008208, 0.110958, -0.039256, -0.075241, -0.116400, 0.137090, -0.044646, 0.008781  # dense_weights[1079]
-    .float -0.171749, 0.182262, -0.076832, -0.129322, 0.177282, -0.174171, -0.075757, 0.330248, -0.351997, 0.115281  # dense_weights[1080]
-    .float -0.330998, -0.212174, -0.245243, 0.284341, -0.251141, 0.021812, -0.092049, 0.074937, -0.182355, 0.030549  # dense_weights[1081]
-    .float 0.049262, -0.078889, -0.122337, 0.180766, -0.205770, 0.097328, -0.093326, -0.026306, -0.105739, -0.028889  # dense_weights[1082]
-    .float -0.215624, -0.105977, -0.131195, 0.162274, -0.027953, 0.048354, -0.129703, 0.060441, -0.115180, 0.059212  # dense_weights[1083]
-    .float -0.022421, 0.060140, 0.022967, 0.130783, -0.010602, -0.046131, -0.205428, 0.111864, -0.053185, 0.035968  # dense_weights[1084]
-    .float 0.080970, 0.014151, -0.043957, 0.084006, -0.046960, -0.045168, -0.212662, -0.035182, -0.043500, 0.000547  # dense_weights[1085]
-    .float -0.171464, -0.084689, -0.130217, 0.090932, -0.092771, 0.081271, -0.112825, 0.073206, -0.177200, 0.155408  # dense_weights[1086]
-    .float 0.054384, 0.031564, -0.035522, 0.054628, -0.028403, -0.007847, -0.065384, 0.090959, 0.030623, 0.098677  # dense_weights[1087]
-    .float -0.152336, 0.099249, -0.328290, -0.207183, 0.173956, -0.185352, -0.137099, 0.328886, -0.248470, 0.159867  # dense_weights[1088]
-    .float -0.269617, -0.295325, -0.214812, 0.333288, -0.255288, 0.148581, -0.048008, 0.005971, -0.048613, 0.003040  # dense_weights[1089]
-    .float -0.103504, -0.106796, -0.132532, 0.185628, -0.189608, 0.143375, -0.069045, -0.007669, -0.072040, 0.037923  # dense_weights[1090]
-    .float -0.089725, -0.117924, -0.140406, 0.140614, -0.058656, 0.050305, -0.032140, 0.045985, -0.000262, 0.103445  # dense_weights[1091]
-    .float 0.050369, 0.009744, -0.115311, 0.074018, 0.015154, 0.076245, -0.068290, 0.056533, 0.080382, -0.049478  # dense_weights[1092]
-    .float 0.050388, -0.062630, -0.031136, 0.071543, -0.063344, -0.032734, -0.082001, -0.035248, -0.031507, -0.040811  # dense_weights[1093]
-    .float -0.090958, -0.111189, -0.130406, 0.006262, -0.045162, 0.039696, -0.064040, 0.090356, -0.171064, 0.158093  # dense_weights[1094]
-    .float -0.043123, -0.100338, 0.008881, 0.092780, -0.096801, 0.024203, -0.073583, 0.002163, -0.008668, -0.055933  # dense_weights[1095]
-    .float -0.164409, -0.127756, -0.220854, -0.131056, 0.165976, -0.169512, -0.230196, 0.206365, -0.067091, 0.192193  # dense_weights[1096]
-    .float -0.197554, -0.336161, -0.065747, 0.251072, -0.264823, 0.187807, -0.143732, -0.037786, 0.039650, -0.037296  # dense_weights[1097]
-    .float -0.119328, -0.038170, -0.103268, 0.186115, -0.189412, 0.098859, 0.001624, -0.066001, -0.089046, -0.005569  # dense_weights[1098]
-    .float -0.144452, -0.115291, -0.225963, -0.078529, -0.069378, 0.086838, 0.049048, 0.078141, -0.039505, 0.032761  # dense_weights[1099]
-    .float 0.021474, -0.133400, -0.079557, 0.039558, 0.013564, -0.009245, -0.145525, 0.063672, 0.088662, 0.023327  # dense_weights[1100]
-    .float -0.007250, -0.068573, 0.065886, 0.083263, -0.085446, 0.064764, -0.036835, 0.024458, 0.104370, -0.025262  # dense_weights[1101]
-    .float -0.328453, 0.026503, -0.250762, -0.004485, -0.030342, 0.004961, -0.209284, 0.172109, -0.216053, 0.162839  # dense_weights[1102]
-    .float -0.000647, 0.004259, -0.018652, 0.118109, -0.076514, 0.131128, -0.076638, 0.045276, -0.002344, 0.021848  # dense_weights[1103]
-    .float -0.104121, -0.104245, -0.312473, 0.018589, 0.051712, -0.097897, -0.150799, 0.102297, -0.056821, 0.214377  # dense_weights[1104]
-    .float -0.016962, -0.349610, 0.055465, 0.212540, -0.304491, 0.225285, -0.157748, 0.007906, 0.094802, -0.070633  # dense_weights[1105]
-    .float -0.169410, 0.052491, -0.043174, 0.112946, -0.144905, 0.129187, -0.164677, 0.077247, -0.118631, -0.010505  # dense_weights[1106]
-    .float -0.273028, -0.094750, -0.286090, -0.149025, -0.084056, -0.118456, -0.073406, 0.128250, -0.074309, 0.124843  # dense_weights[1107]
-    .float 0.019699, 0.036464, -0.135751, 0.048730, -0.041783, 0.047134, -0.106812, -0.027165, 0.127684, -0.093378  # dense_weights[1108]
-    .float -0.006127, 0.002720, -0.011823, 0.008187, -0.032867, 0.011785, 0.014058, -0.027663, 0.098947, -0.046902  # dense_weights[1109]
-    .float -0.525850, -0.030922, -0.283200, -0.057836, 0.008965, 0.007810, -0.309149, 0.235627, -0.171546, 0.153996  # dense_weights[1110]
-    .float 0.012223, -0.003626, -0.024770, 0.097345, -0.009728, 0.089587, 0.020626, -0.017841, 0.066996, -0.039984  # dense_weights[1111]
-    .float -0.044863, -0.141312, -0.183608, -0.028123, -0.020516, 0.062189, -0.159718, 0.111723, 0.116412, 0.147444  # dense_weights[1112]
-    .float -0.151177, -0.232306, 0.017955, 0.163184, -0.316349, 0.147950, -0.174996, -0.056344, 0.033862, 0.013493  # dense_weights[1113]
-    .float -0.172301, 0.038759, 0.099504, 0.071844, -0.136442, 0.141954, -0.139103, -0.025990, -0.111299, 0.032384  # dense_weights[1114]
-    .float -0.376107, 0.120039, -0.217434, -0.081209, -0.072082, -0.108586, -0.176122, 0.173268, -0.033061, 0.067742  # dense_weights[1115]
-    .float 0.048385, 0.097308, -0.051366, 0.089826, -0.011787, -0.004484, -0.043924, 0.029399, 0.052221, -0.048773  # dense_weights[1116]
-    .float 0.009722, 0.029269, 0.080883, -0.024758, 0.060854, 0.073031, 0.043757, -0.065812, 0.063855, -0.074897  # dense_weights[1117]
-    .float -0.405501, 0.070319, -0.206557, 0.038005, 0.033540, 0.017279, -0.311701, 0.244385, -0.218927, 0.085816  # dense_weights[1118]
-    .float -0.009294, -0.041544, 0.036665, -0.042902, -0.097364, 0.098759, -0.085939, 0.069864, -0.017753, -0.064395  # dense_weights[1119]
-    .float -0.069713, 0.009905, -0.008817, 0.024794, -0.125273, 0.031448, -0.027388, 0.035529, -0.037955, 0.144775  # dense_weights[1120]
-    .float -0.235337, -0.122114, 0.002956, -0.004035, -0.254481, 0.098264, -0.231940, -0.022110, -0.061120, 0.122840  # dense_weights[1121]
-    .float -0.148185, -0.055200, 0.024661, 0.103328, -0.123923, 0.076784, -0.206952, 0.014989, -0.001412, 0.071349  # dense_weights[1122]
-    .float -0.279048, 0.037876, -0.071696, 0.027168, -0.054908, -0.038025, -0.155218, 0.142248, -0.195199, 0.164524  # dense_weights[1123]
-    .float -0.063822, 0.127740, 0.056382, -0.070828, -0.021200, -0.029380, -0.008721, -0.054178, 0.075826, -0.030594  # dense_weights[1124]
-    .float -0.035219, 0.106918, 0.001737, 0.011274, -0.026381, -0.010687, -0.012827, -0.015805, 0.043990, 0.118841  # dense_weights[1125]
-    .float -0.238597, -0.054096, -0.169660, 0.127334, -0.101977, 0.059562, -0.159367, 0.117204, -0.168537, 0.098744  # dense_weights[1126]
-    .float -0.143162, -0.010343, 0.108041, -0.013542, -0.013982, 0.016325, -0.085529, -0.023489, 0.034709, 0.051580  # dense_weights[1127]
-    .float -0.164183, 0.050390, -0.031945, -0.056999, -0.133395, -0.010541, -0.024127, -0.013589, -0.001563, 0.111459  # dense_weights[1128]
-    .float -0.245604, -0.102827, 0.032610, -0.115626, -0.200640, 0.041460, -0.226407, -0.011108, -0.169378, 0.124559  # dense_weights[1129]
-    .float -0.105858, -0.030701, 0.049769, -0.077181, -0.157888, 0.117373, -0.252806, 0.103331, -0.149095, 0.051718  # dense_weights[1130]
-    .float -0.142868, 0.031031, -0.019243, -0.015515, 0.052687, 0.005125, -0.138426, 0.058792, -0.125656, 0.156493  # dense_weights[1131]
-    .float -0.153762, 0.105236, 0.049491, 0.041170, 0.016250, -0.003032, -0.067617, 0.007822, -0.065839, -0.001892  # dense_weights[1132]
-    .float -0.072383, 0.088393, 0.008157, -0.046637, 0.011673, -0.077687, -0.011110, -0.134340, -0.008606, 0.028976  # dense_weights[1133]
-    .float -0.181907, -0.067251, -0.005057, -0.024488, -0.129237, 0.115124, -0.164296, 0.043339, -0.184841, 0.005724  # dense_weights[1134]
-    .float -0.048564, 0.028416, -0.065711, -0.102262, -0.047632, 0.016392, 0.012579, 0.045842, 0.035498, 0.076673  # dense_weights[1135]
-    .float -0.113081, 0.050779, -0.026131, -0.067626, -0.075946, 0.080010, -0.014722, -0.057723, 0.001720, 0.087551  # dense_weights[1136]
-    .float -0.092096, -0.059463, 0.058067, -0.030556, -0.223738, 0.113991, -0.170016, 0.002987, -0.173488, 0.106468  # dense_weights[1137]
-    .float -0.143028, 0.021579, 0.036949, -0.061401, -0.264460, 0.054669, -0.130826, -0.021661, -0.127096, 0.113139  # dense_weights[1138]
-    .float -0.188617, -0.030600, 0.008705, -0.043460, -0.006352, 0.118054, -0.130245, 0.012962, -0.203425, -0.009602  # dense_weights[1139]
-    .float -0.031278, -0.083537, 0.025166, -0.130262, 0.086818, 0.067345, -0.099630, -0.148216, 0.028817, 0.019209  # dense_weights[1140]
-    .float -0.097613, -0.083623, -0.072631, -0.034209, 0.079067, -0.023036, -0.063459, -0.124719, 0.060831, 0.140638  # dense_weights[1141]
-    .float -0.068136, 0.017984, 0.087182, 0.014811, -0.096194, 0.128659, -0.124242, -0.001421, -0.112123, -0.062193  # dense_weights[1142]
-    .float -0.137076, 0.033090, -0.119721, -0.070825, 0.010323, -0.010976, -0.126413, -0.024516, 0.016327, 0.193559  # dense_weights[1143]
-    .float -0.084730, -0.038281, 0.024089, -0.087856, 0.049176, 0.118237, -0.123256, -0.000340, -0.060581, 0.035725  # dense_weights[1144]
-    .float -0.107484, 0.027988, 0.044517, -0.070098, -0.077982, 0.147568, -0.141360, 0.062938, -0.137230, 0.077907  # dense_weights[1145]
-    .float -0.091326, -0.050863, 0.063277, -0.008584, -0.135710, 0.106675, -0.093072, 0.011470, -0.080291, -0.013720  # dense_weights[1146]
-    .float -0.127165, 0.080283, 0.014378, -0.002842, -0.137824, 0.073751, -0.009840, 0.051795, -0.120687, 0.040497  # dense_weights[1147]
-    .float -0.095261, -0.072066, 0.037034, -0.035275, 0.068328, 0.059915, -0.127580, -0.110199, -0.021162, 0.115332  # dense_weights[1148]
-    .float -0.102646, 0.042649, -0.054880, 0.011204, -0.030020, 0.044189, -0.191696, -0.126215, -0.067745, 0.129520  # dense_weights[1149]
-    .float -0.138149, 0.071385, 0.092821, -0.046511, -0.088703, 0.124388, 0.000842, -0.010875, -0.150524, -0.070720  # dense_weights[1150]
-    .float -0.083616, -0.023687, 0.004885, -0.052437, -0.018558, 0.025708, -0.208173, -0.053941, -0.003236, 0.122852  # dense_weights[1151]
+    .float 0.08019345, -0.19868167, -0.01696709, -0.07749116, -0.13918322, -0.01632601, -0.14505003, -0.10418198, -0.10674403, -0.09506100, -0.02308065, -0.11408407, -0.07840892, -0.06742292, 0.01832916, 0.01026583, -0.16590583, -0.02510842, -0.00990188, -0.11978007, -0.08418796, -0.10584393, 0.01404687, -0.00675779, 0.02232841, -0.07126692, -0.07569554, -0.07387549, -0.04616801, -0.09340189, 0.05345195, -0.07304040, -0.06463636, 0.02680550, -0.00573927, 0.04448839, -0.09519269, 0.00115245, -0.04911669, -0.11933945, -0.04698307, -0.08815598, 0.08505419, 0.11278614, -0.09149384, 0.01123283, -0.04404208, 0.00186711, -0.03711207, -0.10889626, 0.00172118, -0.01048115, -0.03203008, 0.00524875, -0.07925984, 0.00757882, 0.03447837, -0.06792871, -0.06774517, 0.02449953, -0.09306407, 0.03794711, -0.05346283, -0.07513785, -0.07903468, -0.13099790, -0.01448584, -0.05207442, -0.08490730, 0.00260947, -0.11085509, -0.07794001, -0.06271214, -0.11020306, -0.05437456, -0.01725841, 0.02193302, 0.02451329, -0.15328470, 0.01295777, -0.00229508, -0.03463621, -0.11683556, -0.01398881, -0.09050357, -0.06151027, -0.02751818, -0.02007603, -0.00681891, 0.01408735, -0.05388410, 0.01267488, -0.04567245, 0.00574604, 0.00462211, -0.02952557, -0.07034263, -0.08932512, -0.10124150, -0.00160356, -0.10712840, -0.05448998, -0.06571057, -0.01517161, -0.13153020, 0.01024853, -0.01542290, -0.02320928, -0.09344802, -0.06992777, -0.03782647, 0.01204330, -0.02952523, -0.01439001, -0.02319661, -0.07328705, -0.06701675, -0.04775646, 0.02656374, 0.04405220, -0.09182314, -0.03806709, 0.00021552, -0.00000052, 0.02989722, -0.13211982, 0.05638721, -0.06552760, -0.10914835, -0.02383845, 0.03209848, -0.04194475, -0.00200518, -0.19070955, -0.05669945, -0.07409420, -0.02059447, -0.01915442, -0.02436726, -0.05710253, 0.06547932, -0.11083483, 0.04204230, 0.01827495, -0.06001200, 0.07290473, -0.03687902, 0.02298523, 0.04080208, -0.16736509, -0.04536984, 0.01631149, 0.03749168, -0.04293824, 0.01315535, -0.05358090, -0.01837287, 0.07230057, 0.04380631, -0.05402489, 0.01937545, -0.05058599, -0.12345074, -0.00035120, -0.04497787, 0.01516508, -0.08341993, 0.00119890, -0.05400798, -0.12813838, -0.16438958, -0.10819898, -0.05004251, -0.09265783, 0.04250237, 0.00635894, 0.02431570, -0.00072116, -0.09343936, 0.01803946, 0.05337513, -0.11238885, 0.01307648, -0.00051548, -0.01913960, -0.15708476, -0.16747510, 0.08419249, 0.11528079, -0.05468426, -0.00368670, -0.08660325, -0.02265003, -0.03651769, -0.04752169, 0.00030942, -0.10527006, -0.12162900, 0.01533842, 0.05445129, -0.07517044, 0.05152693, -0.01983120, -0.01230731, 0.01322347, -0.06809078, 0.05632122, 0.06038816, -0.00421349, -0.03037200, -0.05687034, -0.14206180, 0.00637962, -0.15322536, 0.03742374, 0.03140428, -0.10174943, 0.04062587, -0.05199069, -0.11163826, 0.03915919, -0.06541841, 0.04358460, -0.05801779, 0.02087360, -0.07945536, 0.00495420, -0.05160623, 0.00097498, -0.17488590, 0.01275958, -0.03838832, -0.06283277, -0.07237180, -0.05231095, -0.02380466, 0.01835953, -0.21263012, -0.01710964, 0.02380748, -0.04798982, -0.01269111, -0.01213087, -0.05929321, -0.03656106, -0.08552484, 0.05183342, 0.05026326, 0.01757399, 0.01307137, -0.13067806, -0.12019113, -0.03180280, -0.01825826, 0.04707335, 0.05660558, -0.07511574, 0.02882186, -0.20460159, 0.00504201, -0.03144372, -0.01839853, 0.09468409, 0.00766215, -0.02785359, -0.03172875, -0.21845470, 0.04261123, 0.04022033, -0.05945378, -0.04821711, -0.04739980, 0.02824646, -0.01701863, -0.17710464, 0.05944493, 0.01602829, -0.04797016, 0.08015474, -0.00875564, -0.02861513, -0.04685104, -0.24828565, 0.03823498, 0.03962537, -0.10626098, 0.02437234, -0.00854858, 0.02720114, 0.06657755, -0.03228419, -0.04009741, -0.03332742, 0.00860741, -0.05352132, -0.05412489, -0.03682670, -0.06236709, 0.04184564, 0.00298291, -0.04736967, -0.03923494, -0.02758991, -0.02529438, 0.00356893, -0.10760650, -0.06868026, -0.03484602, 0.05427787, -0.02652749, -0.04253162, 0.02778694, 0.02090950, -0.07114326, 0.01982614, 0.00590204, 0.04904638, -0.01857405, -0.06865482, -0.05442681, -0.00543472, -0.06076624, -0.08826213, 0.06869753, -0.04632884, -0.02230270, -0.05807995, -0.04311196, 0.02448741, -0.08384324, -0.02610516, 0.06743681, 0.08818355, -0.00681598, 0.02210769, 0.01460380, 0.03932285, 0.03288212, 0.01676084, -0.07620411, 0.10292381, -0.07120681, 0.02122981, 0.01221991, -0.10243937, 0.05457263, -0.24966581, -0.03757368, 0.03771634, 0.00987404, 0.03467660, 0.02077636, -0.15660767, 0.12796144, -0.28481692, -0.00354334, 0.04131762, 0.06785565, 0.08448137, 0.05207533, -0.06818797, 0.01704405, -0.32424897, 0.06033483, 0.11868694, -0.00474833, 0.05170587, 0.06778326, -0.01353493, 0.00725844, -0.32410040, 0.01352121, 0.04734941, 0.08234236, -0.00156551, -0.01105986, -0.12062649, -0.10549387, -0.13155904, 0.12294505, 0.01488760, -0.05432563, 0.01926162, -0.01513250, -0.01073481, -0.05786844, 0.04107648, -0.00888975, -0.04711644, -0.00264656, 0.03306857, -0.10034800, -0.09173108, -0.01233417, 0.00290216, 0.05716509, 0.05287398, 0.00833330, 0.05943862, 0.02040045, 0.02032042, -0.08006442, 0.02407245, 0.14012046, -0.04323358, -0.04377338, 0.02374861, 0.02403048, 0.05403720, -0.02042404, 0.02073515, 0.07888325, 0.08147494, 0.00486683, -0.04847886, -0.00607286, -0.02446077, -0.03228988, 0.04361813, 0.12127591, 0.09348916, 0.01716844, 0.00466125, -0.03029094, 0.00787663, -0.13019364, -0.08503600, 0.11499145, -0.02088649, -0.06401194, 0.04409143, 0.02333665, -0.16482292, -0.07251073, -0.27213937, 0.10214759, 0.00888219, -0.07349499, -0.01898745, 0.02473796, -0.15155116, 0.12029794, -0.33303970, 0.01170218, 0.04178092, 0.12700154, -0.01209973, 0.10041749, -0.22898537, 0.12407900, -0.27112794, 0.06039904, -0.01690712, 0.09224334, -0.06189017, 0.05690765, -0.12221929, 0.02661735, -0.20233773, 0.13255852, 0.05891224, -0.01717847, 0.02383901, 0.13194217, -0.13069354, 0.03956364, -0.23716082, 0.11202113, 0.01204325, 0.03671581, 0.13284314, 0.06587895, -0.11252920, -0.02462104, -0.24026237, 0.19749862, 0.12304193, -0.11074634, 0.09648374, -0.03757670, -0.04438870, -0.05611373, -0.04333328, 0.06996513, -0.05330429, -0.13414907, 0.09586184, -0.01389182, -0.02647530, -0.06202084, 0.06240996, 0.09738988, -0.05479242, -0.06049331, 0.05265274, -0.05520310, 0.09481664, -0.08627486, 0.03684828, 0.13846871, -0.04695217, -0.04055745, 0.04124364, 0.03642566, 0.01922927, -0.01198864, 0.02400924, 0.22017343, -0.00084074, -0.09580718, -0.03737084, 0.03206796, 0.04282656, -0.13718477, 0.07626992, 0.13642308, -0.05301751, -0.10523947, 0.10751305, -0.01719536, -0.07751756, -0.20193528, -0.20467988, 0.18644933, -0.11351269, -0.22521365, 0.06624192, -0.09169617, -0.17810974, -0.17585827, -0.36472338, 0.19556952, -0.09951746, -0.13829757, -0.06823069, -0.11369178, -0.04493879, -0.09706123, -0.20509233, 0.02506160, -0.12324315, 0.04942918, -0.01221927, -0.03729434, -0.05807487, -0.09545878, -0.04747479, 0.10082977, 0.05148639, 0.06358354, 0.02387318, -0.00155986, -0.08892621, 0.06097305, -0.03210837, 0.12770441, 0.12806743, 0.00124053, -0.03436127, 0.03194427, -0.13369611, 0.11966605, -0.12419930, 0.07365885, 0.03887824, 0.00776316, 0.12610981, 0.10440445, -0.02792714, 0.05658333, -0.23107247, 0.19792272, 0.14826378, -0.16795468, 0.06772505, 0.07376830, -0.03781369, 0.01753493, 0.05588083, 0.01794280, -0.03436647, -0.10054533, 0.03660092, 0.03907952, 0.04150849, -0.00612917, -0.05845307, 0.02085418, 0.05627360, -0.03471314, -0.06593817, 0.04555064, 0.10688504, 0.03109732, -0.00256585, 0.16111910, 0.07487051, -0.02694524, -0.00258312, 0.07444680, 0.08234785, -0.02796093, -0.02039839, 0.16496742, 0.04564115, -0.11579426, 0.10582554, 0.11000312, -0.01821182, -0.08823859, -0.12583145, 0.08680857, -0.01735215, -0.00285718, 0.06472497, -0.01705156, -0.09924032, -0.11647707, -0.31339839, 0.29729223, -0.09263876, -0.26639533, -0.00990774, -0.13904701, -0.17561392, -0.09440088, -0.14146429, 0.15786719, -0.08140910, -0.17224117, 0.00351518, -0.14641915, -0.06310873, -0.17619151, -0.01753071, 0.02528881, -0.05237789, -0.12268312, -0.04356388, -0.08035880, 0.02615130, -0.09907404, -0.08753031, 0.06960766, 0.04589913, -0.00807884, 0.02141193, -0.00247905, -0.01531762, 0.01912806, 0.15523131, 0.05811416, 0.10327935, -0.04986042, -0.00122489, 0.04543741, 0.04098235, -0.01107829, -0.05188001, 0.08436559, 0.05417057, 0.01400034, 0.10100242, 0.10226291, -0.13438451, 0.02526366, -0.20646380, 0.04024492, 0.12301894, -0.07229884, 0.14963430, 0.10449864, 0.00055052, 0.06783159, 0.06325552, -0.03047141, -0.03579645, -0.08776502, 0.03064393, 0.02791203, 0.00565167, 0.01349334, -0.05651007, 0.09614835, 0.00524509, -0.01524848, -0.01589154, 0.01497558, 0.02600708, 0.02657577, -0.15301278, 0.15258425, 0.03645701, -0.03327868, 0.02256312, -0.03500626, -0.01030315, -0.03847663, -0.10746500, 0.17357284, -0.05663247, -0.05158825, 0.05373948, 0.07009123, 0.01587746, -0.07980485, -0.20488018, 0.10866616, 0.02100929, -0.07071025, 0.11935723, -0.00280315, -0.13574268, -0.06319270, -0.09173154, 0.29982433, -0.05796749, -0.19692230, 0.04797123, -0.00166505, 0.01540114, -0.15062007, 0.05947667, 0.13179296, -0.04492162, -0.19175984, -0.03612847, -0.13115084, 0.09300487, -0.10105949, 0.01356575, 0.08350080, -0.08957991, -0.15734248, -0.00039719, -0.05671901, -0.00714532, -0.04947955, 0.05098386, 0.11645858, 0.00456101, -0.12112030, 0.04308478, -0.00725509, 0.03090319, 0.02724840, 0.02610222, 0.04435528, 0.09651811, -0.04478873, 0.08953467, 0.09162044, 0.07986084, -0.02371817, -0.08207384, -0.00955406, 0.05048265, -0.03623182, -0.03397188, 0.09128603, -0.15155816, -0.01727749, -0.14210171, 0.01469744, 0.09348689, -0.04712392, 0.00988533, -0.04292408, -0.10317711, 0.05209508, -0.01007676, 0.02958997, 0.11154600, -0.01261531, 0.04084747, 0.00726889, -0.11623402, -0.01415870, -0.18800920, -0.00987873, 0.04208398, -0.07063287, -0.04658959, -0.01989817, 0.02075665, -0.02164588, -0.21808162, 0.05417451, 0.07578461, 0.00110370, -0.03759818, 0.06093781, -0.01438818, 0.06785258, -0.08863792, 0.10650396, -0.02609106, 0.06318543, 0.02562196, 0.08301704, 0.01879129, 0.09179772, -0.05139741, 0.11099898, -0.04380691, 0.06957034, 0.04577052, -0.03635031, 0.06763334, -0.09671673, -0.06118817, 0.10411150, -0.06190140, -0.19722337, 0.05487160, -0.09255467, 0.04027899, -0.14310896, 0.06891795, -0.01409637, -0.01291116, -0.11991852, 0.01896133, -0.04685301, 0.04074837, -0.01114698, 0.06689285, 0.09107009, 0.03667322, -0.00724350, -0.07904740, 0.00381373, -0.00867387, 0.01340043, 0.16228580, 0.05649970, 0.08063247, -0.00808811, 0.02198835, 0.08576302, 0.02281964, 0.02125221, 0.10154887, -0.03491585, -0.03316425, -0.08514021, 0.05053395, 0.05578117, -0.02897596, 0.03162628, 0.01835458, 0.01666683, 0.01914072, -0.07849117, 0.01717174, 0.06424858, -0.18557493, -0.01740407, -0.01540845, 0.00186656, 0.02949019, -0.05157888, 0.08781578, -0.05661468, 0.03185700, 0.02653283, -0.02969462, 0.00095355, 0.00719219, -0.09356688, -0.03405553, 0.07633794, -0.03648736, 0.08437693, -0.17088333, -0.11229295, -0.01791188, -0.03922978, 0.06086208, -0.01131365, -0.03358041, -0.02142191, -0.18601312, 0.02798886, 0.08238345, -0.05074900, -0.01033978, 0.04040466, 0.00453645, 0.03640036, -0.20968859, 0.11384635, 0.10598097, -0.02458318, -0.01359612, 0.00229881, 0.02906430, 0.01265690, -0.15826772, 0.05986499, 0.07758422, 0.13978548, 0.09783123, 0.07309666, 0.07362492, 0.07642327, -0.17677160, -0.05330261, 0.03614273, 0.03903699, -0.02249344, 0.00883705, 0.01000906, -0.05888588, -0.01027137, -0.13307995, 0.07991333, -0.05007523, -0.00753294, -0.07534320, 0.08833230, -0.06448955, 0.06128168, -0.04709829, 0.00318458, -0.14599441, -0.05687397, 0.00254752, -0.01423889, -0.07247772, 0.08887170, -0.05502869, 0.05485581, -0.08222792, -0.02754896, -0.06952282, 0.06068247, -0.04464638, 0.11764039, -0.11560909, -0.01194376, -0.06650996, -0.07905954, -0.08007230, 0.03473438, 0.02000949, -0.01982252, 0.01876082, -0.04896686, -0.07778357, -0.06504260, -0.02324672, -0.02211220, -0.02021311, -0.00077348, -0.05690366, -0.00612131, -0.06785561, -0.06119020, -0.10632558, 0.09286943, -0.05501218, -0.05290461, 0.01252636, 0.00455504, 0.00582309, 0.00769031, 0.05601653, 0.05620894, -0.01073487, -0.22429886, -0.01230717, 0.07658211, -0.02564953, -0.02124134, 0.13273719, -0.02109161, 0.04027634, -0.37070960, 0.00246504, -0.01860696, -0.02872670, 0.03895015, 0.00957607, 0.04697398, 0.13207167, -0.37383595, -0.12411610, 0.06805952, -0.01409212, 0.03384937, 0.01806276, 0.01107423, 0.05633101, -0.33522969, -0.14306603, 0.03497715, 0.13098544, 0.13759363, 0.08996075, -0.05007977, 0.07612137, -0.09550192, -0.15355258, 0.09737957, 0.05321421, 0.14690520, 0.02119339, 0.02386886, 0.12781896, -0.01219235, -0.14790672, -0.02701782, -0.04543319, 0.02190362, -0.03478685, 0.01686170, -0.05448617, 0.03956101, -0.21769880, -0.06423192, -0.17331746, -0.00512219, -0.02510514, -0.00218332, -0.11309652, -0.01667920, -0.15660352, -0.07050724, -0.11282952, -0.09391324, -0.12011167, -0.01267784, -0.04171958, 0.08245695, -0.11536141, -0.01328863, -0.16309531, -0.06363518, -0.05614883, -0.08693229, 0.01091730, 0.02129829, -0.04623637, -0.05197778, -0.11822613, -0.04128058, -0.11707082, 0.00770280, -0.11357813, -0.01800233, -0.11451510, -0.12485328, -0.11140148, -0.00061272, -0.15185684, -0.08815527, -0.03006700, -0.08121225, -0.09700177, 0.00617582, -0.07887435, 0.05081082, -0.02912349, 0.01503280, -0.12124094, -0.05791520, -0.10471555, 0.06938352, -0.06523382, 0.05781534, -0.01318031, 0.05003755, -0.00808899, -0.20566709, -0.12837741, 0.10499491, 0.08972365, 0.02388131, 0.02837964, 0.00113364, 0.04434169, -0.27129751, 0.02713018, 0.04635378, 0.05134505, 0.02431529, 0.04459365, -0.09646955, 0.01301617, -0.36015198, -0.03447407, 0.01596428, 0.15977055, 0.04676969, 0.09070228, -0.24258997, 0.09583872, -0.33626851, -0.17538635, -0.04558457, 0.13009472, 0.01499923, -0.00102924, -0.34586892, -0.04651187, -0.25730374, -0.12324528, -0.06161238, 0.05840586, -0.00420197, 0.04625507, -0.23715951, 0.01219402, -0.02136143, -0.10106924, -0.10349564, 0.06059529, -0.05402837, -0.08435488, -0.13995235, -0.15918387, -0.02840352, -0.09502456, -0.19303487, -0.00839503, -0.05339840, -0.08589048, -0.08510085, -0.16522409, -0.03311391, -0.18655586, -0.06223413, -0.01563751, -0.10981256, -0.18221447, -0.10683349, -0.11891268, -0.01497055, -0.20238961, -0.17578661, -0.09283423, -0.08732199, -0.08048593, 0.05316861, -0.03346600, 0.04555629, -0.04562969, -0.12746973, -0.08084250, -0.13853282, -0.18281940
+    .float 0.13523541, 0.12751564, 0.11182610, 0.02401896, 0.12574144, 0.09447238, 0.05620605, 0.12641604, 0.02715605, 0.08419815, 0.01093775, -0.03575896, -0.06230952, 0.04363407, 0.09904015, -0.04172142, -0.00354233, -0.08948195, -0.07880048, 0.04903142, -0.03609075, -0.04783125, -0.05656838, -0.03180843, -0.03610396, -0.08136499, -0.05423544, 0.14301863, -0.20814653, -0.02218664, -0.04840131, 0.00930251, -0.08503321, 0.03143067, -0.07450136, 0.19369191, -0.06880436, 0.10621449, 0.02619182, -0.00673664, -0.04277803, -0.03772855, 0.04362025, 0.11103599, -0.10543270, 0.13252394, -0.00923776, 0.03503207, 0.03479941, -0.10676324, 0.00624080, 0.08042081, -0.02992355, 0.05834400, -0.04637671, 0.08619116, 0.08701911, -0.03446977, 0.04282027, 0.14382587, 0.12523347, 0.07076112, 0.01053627, 0.09140205, -0.01683101, 0.11935257, 0.06064409, 0.12182163, -0.02487479, 0.09710051, 0.02041179, 0.05137412, 0.13708068, -0.07341655, 0.06141783, 0.07049312, 0.08860236, 0.05302253, -0.04769392, 0.06789482, 0.01166451, -0.14465111, 0.01539553, 0.05450451, -0.00282594, 0.01960335, 0.04558687, -0.01219586, -0.04256134, -0.12091815, -0.07336427, 0.03224577, 0.00712714, 0.09195613, 0.03310577, 0.05122942, 0.00585733, 0.03639946, 0.01882359, 0.05585785, 0.15570743, 0.01813718, -0.01098649, 0.01063795, 0.00792752, 0.05917782, 0.01236550, -0.04286857, 0.02904225, 0.13572077, -0.10220625, -0.01492410, -0.05386819, 0.02075415, -0.03334184, -0.06580842, -0.07201521, 0.01024681, -0.01710742, -0.03116795, -0.20606899, 0.01191986, -0.08788360, 0.10080526, -0.07567696, -0.04142980, -0.10301849, -0.11186349, -0.17786051, 0.04474987, -0.13440642, 0.18925840, -0.04795129, -0.03845545, -0.20632604, -0.13604952, -0.09180096, -0.05703143, -0.02560787, 0.19521394, 0.02456416, -0.11441368, -0.05959987, -0.05624436, 0.00306484, -0.06848830, -0.02787990, 0.22325750, 0.00939729, -0.06378283, -0.04645231, -0.00028316, 0.04919990, -0.04999411, 0.04192627, 0.25033641, 0.01489668, 0.03973037, 0.04656050, -0.01939415, 0.01064453, -0.18006916, 0.12120498, 0.14198533, -0.05718849, 0.02637586, 0.02112976, 0.05533388, 0.01663714, -0.10866941, 0.14934707, 0.12936316, 0.06627858, -0.01543573, 0.06891949, 0.04518098, 0.06496993, -0.01676858, 0.00714389, 0.08468835, -0.05954269, -0.06596138, 0.00956325, 0.01942250, -0.08325683, -0.10921299, -0.06266549, 0.01039214, -0.03696459, 0.03575994, 0.05576647, -0.07622983, 0.08472193, -0.06515141, -0.06315634, 0.05769310, 0.01041112, 0.05133688, -0.04076827, -0.10321096, 0.02216429, -0.04970538, -0.12335814, -0.00452257, 0.02279161, 0.04600602, 0.01789876, 0.05778586, -0.12494550, -0.04933619, -0.10600846, 0.03931895, -0.13740455, 0.01777579, -0.05845694, -0.03080839, -0.18456696, -0.01731717, -0.10667273, 0.05513471, -0.01799612, -0.03199726, -0.11165307, -0.12016379, -0.13058864, -0.08382073, -0.14075148, 0.07482955, -0.03201659, -0.03815091, -0.12565750, -0.00203719, -0.09138997, -0.10178325, -0.10947300, 0.20553362, -0.07054967, -0.12888338, -0.13707404, 0.05372075, -0.11384539, -0.14003719, 0.08081105, 0.26682261, 0.02729577, -0.07368647, -0.00527060, 0.03812062, -0.13842240, -0.22257587, 0.09804285, 0.12755658, 0.09584717, -0.15399608, 0.07400342, -0.03329118, -0.09489037, -0.12642477, 0.10851412, 0.12196650, 0.07959032, -0.27341950, -0.04608678, 0.02129686, 0.01615298, -0.07655624, 0.16040848, 0.09067871, -0.01579053, -0.40770704, 0.12903868, -0.05451064, -0.07882473, 0.04055783, -0.13010174, 0.12926134, -0.04560320, -0.32202694, -0.01474213, -0.05720618, -0.21500093, -0.08239627, -0.03747970, -0.04178730, -0.13741697, -0.09512338, -0.03690742, -0.21590659, -0.09482445, -0.02912152, -0.01135301, 0.02507496, -0.10328215, -0.00655985, -0.14458133, -0.07936725, -0.12576784, -0.05975083, -0.03866262, 0.04862984, 0.02977795, 0.10088589, -0.07434000, -0.04564827, -0.11980922, -0.07739284, -0.04268204, -0.00111501, 0.00507634, 0.02108325, 0.00786978, -0.02524918, -0.02651163, 0.02706573, -0.09806909, -0.22436652, 0.01475695, -0.14209092, 0.01987893, 0.02928366, -0.15446575, -0.10883526, -0.11599490, -0.14244035, -0.10707124, -0.05672269, 0.00928911, -0.10114402, -0.05652126, -0.05229451, -0.12393343, -0.01673067, -0.04081934, -0.03772857, -0.08796844, 0.01274174, -0.12580529, -0.10909459, 0.09428928, 0.25128612, 0.06328024, -0.10814480, -0.05182646, 0.03610678, -0.06554462, -0.17187333, 0.22861010, 0.12554501, 0.02921794, -0.32083812, -0.02004688, -0.01564908, -0.15921396, -0.09126720, 0.16201515, 0.06981991, -0.05452494, -0.37482917, 0.03904757, -0.02024422, -0.02408847, -0.07510621, -0.10655352, 0.00813119, -0.07557356, -0.43891367, -0.05849112, -0.03329206, -0.18013513, -0.00690092, 0.00842965, -0.00736165, -0.00463946, -0.12930131, 0.05317744, -0.09754333, -0.19518767, -0.13350739, -0.05487398, 0.03875583, -0.12510841, -0.08747222, -0.09523755, -0.14738572, -0.11042380, -0.04730878, 0.05368775, -0.03583393, -0.03373090, 0.03920301, -0.02997449, 0.01622496, 0.01856418, -0.01765366, -0.08531948, 0.08012819, 0.01268928, 0.06734982, -0.06037586, -0.06063968, -0.06823954, 0.03330663, -0.09099090, 0.00359511, -0.06147548, 0.00781757, 0.02984725, -0.04497058, 0.01129868, -0.02742282, -0.09276072, -0.22882009, 0.01020635, -0.02536624, -0.13081901, -0.07862805, -0.09167061, -0.08392893, 0.00774505, -0.14262080, -0.05249774, -0.01538829, -0.04311796, -0.08884306, -0.05636578, 0.11956982, -0.03920212, -0.10207272, 0.05127358, -0.07274599, -0.04704709, 0.11230971, -0.17289366, -0.04802378, 0.20876679, 0.08967739, 0.09622295, 0.08051443, 0.07471005, 0.02847045, -0.22259797, -0.00753157, 0.02953736, 0.04340686, 0.06262083, -0.20023407, 0.11673118, -0.00215827, -0.29451400, -0.03163774, -0.10947803, 0.03036921, 0.04343887, -0.42665887, -0.01505284, 0.04941752, -0.13782160, -0.02819793, 0.04457464, -0.02195813, 0.06441513, -0.25482640, 0.06668263, -0.01672242, -0.04724250, -0.06900620, 0.11524469, -0.03171089, -0.10712888, -0.10798151, -0.06610074, -0.16643295, -0.08832936, -0.15189651, 0.01095381, -0.04530597, -0.04240334, -0.03484394, -0.06115652, -0.13995974, 0.01670393, 0.06339309, 0.05888122, 0.00535131, -0.10874606, 0.03189240, 0.02937920, -0.04765759, -0.11503935, -0.01730627, -0.03104729, 0.13876335, -0.11224630, -0.01215708, -0.08660945, 0.02211609, -0.03630905, -0.02602152, -0.00087243, -0.06802320, -0.01693748, -0.02123907, -0.05423267, 0.03727177, 0.06027410, -0.16835216, -0.04415832, 0.00199872, -0.04528118, -0.07987881, -0.16990939, -0.06416252, -0.07876762, -0.09933411, -0.00661585, 0.09576551, 0.04644351, -0.19702297, -0.05255202, -0.12991011, 0.02663761, -0.00224184, 0.16008081, -0.09512313, 0.06571338, 0.02132230, -0.09071608, 0.03210982, -0.03912129, -0.11938399, 0.11514934, 0.07951898, 0.01914841, -0.01754341, 0.00373109, 0.08974253, -0.15729308, -0.07593413, -0.03879921, 0.03402567, 0.09995465, -0.14384247, 0.09429213, 0.08961061, -0.33509505, -0.04286585, -0.01431520, 0.06557251, -0.00319814, -0.30059281, 0.00616137, -0.02882368, -0.09338118, 0.02784879, -0.10449941, 0.01142311, 0.03534007, -0.04982234, -0.03037581, -0.02564703, -0.10915610, 0.00138331, -0.02682989, 0.06256657, -0.00836788, -0.03670825, -0.01086782, -0.04101566, -0.10173774, -0.01860392, -0.02937799, -0.07045354, -0.08928045, -0.03933617, -0.13048981, -0.12135400, 0.10691800, -0.06407764, 0.01341937, -0.03056862, -0.03402815, 0.07188993, -0.03759595, -0.04093061, -0.13704902, -0.04699948, -0.02998299, 0.01180669, -0.02861975, 0.07630870, -0.06266995, -0.01991111, -0.04958840, 0.00241825, -0.02411142, -0.02207416, 0.01839490, 0.04997580, -0.01194022, 0.01762186, -0.14239217, -0.09673081, -0.04922747, -0.02527537, -0.05317595, -0.10143077, -0.15765736, -0.11926624, -0.13553582, -0.20811592, -0.05711916, 0.26497269, -0.01959366, -0.24738285, -0.08608060, -0.07992571, 0.04147243, -0.07155915, 0.07486878, -0.03708762, 0.03941049, -0.01081811, -0.05787636, -0.01429369, 0.03546583, -0.16215648, -0.07802404, 0.10798214, 0.03601297, 0.02097363, 0.03401711, 0.10888076, -0.25184694, -0.04547145, -0.12963237, 0.18404253, 0.04227228, -0.26377293, 0.11607055, 0.00380441, -0.32590446, -0.07649245, 0.01813652, 0.03449531, -0.04143630, -0.13501331, -0.05764464, -0.08949620, -0.12475986, -0.07290062, -0.02329580, 0.00650261, -0.11464446, 0.02367984, -0.11462149, -0.04486021, -0.14726667, -0.09419971, 0.02680845, -0.08005527, -0.06803048, -0.00732785, -0.06968845, -0.17455202, -0.04878071, -0.05528193, 0.10967961, -0.04945582, -0.03036611, 0.03210275, -0.09844080, -0.10580795, -0.02044102, -0.17256325, -0.07484483, 0.05429065, -0.04671837, 0.06557201, -0.13804404, -0.14178550, -0.15863736, -0.02792029, -0.15929691, 0.07839721, -0.02380192, -0.02204500, -0.08556694, -0.05500636, -0.06882428, -0.10955782, 0.01548548, -0.03456806, -0.05954112, 0.01888581, -0.03652344, 0.02035645, -0.09920915, -0.15455122, -0.05139511, -0.11549280, -0.11662094, -0.02900701, -0.09994625, -0.07608879, -0.12431379, -0.10779016, -0.01701431, 0.13390099, 0.01490799, -0.16381249, -0.17650843, -0.12301598, -0.08500336, -0.03330081, -0.14269388, 0.12745048, 0.03433391, 0.11641043, -0.10014072, 0.10791131, -0.15335688, -0.03944325, -0.00912171, 0.09229051, 0.00660807, -0.02420853, 0.04231545, 0.03643253, -0.31759381, -0.01288011, -0.10434098, 0.10223205, -0.09935689, -0.34778634, 0.08088119, 0.00068403, -0.13582380, -0.08368988, 0.08421149, -0.06187292, -0.09136407, -0.17699999, -0.02448010, -0.11022493, -0.01961948, -0.14829801, 0.19420557, -0.11188468, -0.07733033, -0.22228965, 0.02014801, -0.00772701, 0.01764814, 0.02811718, 0.04994830, -0.07313409, -0.03058243, 0.03486338, -0.08482975, -0.02180443, 0.02898108, -0.01664550, 0.15689464, 0.02814679, -0.06933827, 0.03709284, -0.04679364, 0.02513945, -0.09320946, -0.04257618, 0.06588367, 0.04909123, -0.11608680, 0.07224711, -0.00913913, -0.04972843, -0.03303510, -0.04888328, 0.01495299, 0.01484168, -0.13691257, 0.01538726, 0.04335017, -0.05024476, -0.05096074, 0.00404109, 0.10000621, 0.01557997, -0.01177004, -0.03657687, -0.14677970, -0.09906838, -0.01563630, -0.00701998, 0.06859060, -0.12432675, -0.03444802, -0.20329224, -0.00696388, -0.13778138, -0.00573097, -0.05980517, 0.04177019, 0.00942450, -0.03814129, -0.21730568, -0.02398478, -0.03645839, -0.02989299, -0.09024401, 0.06793891, 0.10503454, 0.05736964, -0.01968815, -0.04747096, 0.12038209, -0.26446536, 0.03490892, 0.01698283, 0.10687044, -0.03057252, 0.00822207, 0.10438409, 0.01915859, -0.21047090, 0.00058486, -0.32440695, -0.04836029, -0.01039466, -0.22412638, 0.02514638, -0.05709999, 0.01991903, -0.09440261, 0.16881762, -0.05071423, 0.01638761, -0.27965310, -0.05806498, 0.03543941, 0.05124879, 0.11008392, 0.07941942, 0.07326132, 0.08444053, -0.14908315, -0.03298725, 0.01547083, 0.06760948, 0.03596683, 0.03126022, 0.09385084, 0.00856508, 0.04679284, 0.02109929, 0.04604205, 0.08433206, 0.09865174, -0.01154478, 0.00288363, 0.08462481, 0.10372084, 0.05161786, 0.08972320, -0.11372098, 0.10969210, 0.12871066, 0.08133457, 0.04406797, 0.01195772, 0.07092493, 0.11619439, 0.07367414, -0.01343762, 0.14040704, -0.02845876, 0.04715643, -0.08802786, 0.02524296, 0.03491461, 0.09460983, 0.07803887, 0.04792294, 0.00798861, -0.00472995, -0.07619394, 0.01527815, 0.02534364, -0.04644683, -0.00159384, 0.12753336, 0.12026400, -0.05006513, -0.02279300, -0.06375344, -0.03128287, -0.15509850, -0.07265873, 0.06085100, 0.26269680, -0.00240985, -0.12559070, 0.04301371, -0.01069591, -0.19288673, -0.02860547, 0.19433410, 0.08329985, 0.05285405, -0.05090532, 0.02649143, 0.02116510, -0.21557543, -0.00106543, -0.26282325, 0.00146225, -0.05270185, 0.01544191, -0.00103986, 0.08757782, -0.24448797, 0.12901756, -0.40323314, -0.10208392, 0.09418896, -0.09097040, 0.08942679, 0.02744914, -0.13013442, 0.11882971, -0.05721502, 0.02881110, 0.05539004, 0.09253978, 0.02163708, 0.09817004, -0.04434669, 0.07581332, -0.16288884, 0.11187439, 0.09429719, 0.08346170, 0.07218909, 0.05116622, -0.00796536, 0.09372078, -0.16673800, 0.03196421, 0.09673539, 0.15505028, 0.09299167, 0.04103603, -0.04675182, 0.00503940, -0.02997400, -0.03260772, 0.06070518, 0.14069328, 0.05118829, 0.01189713, 0.06833318, 0.09775074, 0.02174372, -0.00489775, 0.11443845, 0.11890133, -0.09891633, -0.03241584, 0.02972164, 0.11407876, 0.00734002, -0.03466956, 0.04344161, 0.09721439, -0.00895843, 0.01611678, 0.05731116, 0.00471541, -0.01442902, 0.06049322, 0.03586277, -0.03028222, 0.01380159, 0.04060917, -0.09382640, -0.03896615, -0.07030759, 0.24511930, 0.03624266, -0.07229259, -0.01255231, -0.03071130, -0.16105556, -0.10361557, -0.03560415, 0.21469590, -0.07385723, -0.10257624, 0.00906582, -0.02318640, -0.20065233, 0.03600781, -0.05058501, 0.07191683, 0.00564852, 0.09108922, 0.04045170, 0.04459441, -0.30405945, 0.06411791, -0.17086470, 0.04605334, 0.08305013, 0.03611939, 0.11139394, -0.01314906, -0.35924739, 0.05201593, -0.13519916, 0.06956484, 0.04603055, 0.12180262, 0.03569365, 0.08644436, -0.20855367, 0.16773808, -0.21296303, 0.07005902, 0.02908264, 0.11471331, 0.01383176, 0.09192692, -0.29031295, 0.03571261, -0.09281821, 0.12429395, 0.06638019, 0.14525340, 0.02250240, 0.08828583, -0.09296452, -0.02582140, -0.00683882, 0.12232031, -0.03741282, 0.07633784, 0.05540210, -0.02121428, -0.03915288, 0.01109024, 0.09245325, -0.02205162, -0.01102706, 0.07719738, -0.04358432, 0.05676049, 0.03989619, 0.00530679, 0.06846900, -0.03320599, -0.01523175, 0.09510780, 0.01097251, 0.02487512, -0.07457347, -0.03447735, 0.00787178, 0.08100764, -0.05990485, 0.09787242, -0.01090684, 0.08291923, -0.03156145, -0.06356204, 0.01024489, 0.06199224, -0.08576173, -0.04557427, -0.04313783, -0.04251285, -0.00020141, -0.15894517, -0.21418010, 0.14146125, -0.12272879, 0.03167836, -0.11880647, -0.00163143, 0.01095605, -0.09878072, -0.17110622, -0.01121686, -0.03823392, 0.02277592, -0.03061325, -0.11433701, -0.03076426, -0.04470176, -0.07216357, -0.03382450, 0.01124826, 0.03423679, 0.01579097, 0.02856052, -0.16687959, -0.08283222, -0.08783115, -0.03789940, 0.00196335, 0.07964309, -0.03641487, 0.01141425, 0.10131083, 0.02073235, 0.01604256, 0.07111872, -0.08387755, 0.13896185, -0.01937065, 0.08131675, 0.05225142, 0.07630687, -0.05810855, 0.04585112, -0.05501570, 0.13198598, -0.01508746, -0.04691883, 0.07479718, 0.05657441, 0.05602684, 0.06834081, -0.03361139, 0.08955739, -0.05295395, 0.04983869, 0.10293876, 0.01018620, 0.07712261, 0.04308948, -0.04057996, 0.05731616, -0.03813775, -0.12039112, -0.08393817, -0.15546982, 0.03802255, -0.07159697, -0.10279910, 0.00714795, -0.15096617, -0.08739776
+    .float -0.01151362, -0.03433812, 0.03445725, 0.09379627, -0.07661882, 0.06578661, -0.07804767, -0.09263173, 0.00538649, -0.08048683, 0.05028464, 0.05797576, -0.02288646, -0.03038030, -0.01321312, 0.01031010, 0.00881546, 0.11740842, 0.08867126, 0.00784176, 0.12160174, 0.06651407, 0.05779686, 0.10729779, 0.10259339, 0.19639815, 0.04761972, -0.06494464, 0.11851547, 0.12165209, 0.11359330, 0.06110809, 0.06349365, 0.16043195, 0.00795605, -0.01537508, 0.12878242, 0.00822408, 0.12051727, 0.06289555, 0.12050078, 0.02871920, 0.06955127, 0.07165454, -0.01299010, 0.02037983, -0.02817544, 0.06181401, -0.07300371, 0.04017652, -0.05130006, -0.08246970, -0.05234520, 0.04927587, -0.01505683, 0.04291747, -0.02116800, 0.02514677, -0.00683958, -0.08763956, -0.04150612, 0.00482736, -0.07015131, 0.00478285, -0.11577826, -0.13854641, -0.12803473, -0.03550021, -0.10602099, -0.16225581, 0.01044908, -0.06639393, 0.00432638, -0.21667232, -0.03508141, -0.01087376, -0.08049241, -0.04698235, -0.06945682, -0.08194998, -0.01377570, -0.03448470, -0.08361226, 0.00200534, -0.02941754, -0.00326214, -0.07162479, -0.05376083, -0.12722899, -0.08442912, -0.02728299, 0.03179393, -0.08776020, 0.01732160, -0.01498489, -0.11978505, 0.06822224, 0.04963697, 0.10443249, 0.06806692, -0.06655484, -0.06347129, -0.04607865, 0.07042741, 0.07845716, -0.05690384, -0.01342847, 0.06834067, -0.03613202, 0.07822856, -0.00369496, 0.07817448, 0.02448266, -0.02804763, 0.07485718, -0.01355060, -0.00161945, -0.01583399, -0.03130654, 0.04271742, 0.09684865, -0.00305733, 0.00111704, -0.12724568, 0.00206056, 0.15329038, 0.01114688, 0.02400308, -0.02474075, 0.02754650, -0.03106506, -0.24367318, 0.00701616, 0.12279578, -0.00317330, 0.00774531, -0.03985068, -0.02025352, -0.13376163, -0.08603073, 0.00393370, 0.05053543, 0.02752902, 0.05767601, -0.03810709, 0.04212398, -0.17889695, -0.16671060, -0.04399391, 0.04091746, 0.00327284, 0.02114891, -0.11995085, 0.06377383, -0.12248404, -0.19189870, 0.03409966, 0.02551804, 0.02437129, 0.00620788, -0.05165526, 0.08871442, -0.21007502, -0.08956306, -0.01845146, -0.03406896, -0.01857097, -0.02119105, -0.14314196, 0.02657951, -0.11248072, -0.11567053, -0.04155922, -0.03503934, -0.06903935, -0.02677963, -0.09188502, -0.13970920, -0.16004558, 0.02716412, 0.01264021, -0.11175431, 0.04708995, -0.05598416, -0.08407821, -0.29197195, -0.08114223, -0.00545587, 0.00938586, 0.03323874, -0.02192379, -0.12684746, 0.03762721, -0.01575298, 0.09814073, 0.05645164, -0.03423221, 0.06270249, -0.02872838, 0.02521797, 0.15312457, -0.06229638, 0.01247058, 0.01066349, 0.07337541, -0.02543113, 0.07410178, 0.06137700, 0.06667114, 0.02391847, -0.01223436, -0.09230067, -0.02421146, 0.01468031, -0.01781385, 0.04563320, 0.10619700, -0.02861235, 0.09485298, -0.32955235, 0.01292842, -0.00871139, 0.06932836, 0.08091418, 0.03353570, -0.02538188, 0.09893828, -0.29498327, -0.01029882, 0.03976094, -0.04392610, 0.05797525, -0.07029239, -0.03309423, -0.02968833, -0.09281737, 0.06116952, 0.02864305, -0.00299327, -0.02831035, -0.01993720, 0.02464346, -0.10317636, -0.08224170, 0.05148805, 0.08658619, 0.06995095, -0.03819665, -0.11719179, 0.03236360, -0.36767444, -0.07666254, -0.04223254, 0.12062911, 0.00452385, -0.01396664, -0.16491033, 0.07974641, -0.35413459, -0.02871335, -0.06249869, 0.16463290, -0.00974233, -0.01307363, -0.20686367, -0.00977884, -0.34632999, 0.02565533, -0.07286015, 0.11092962, -0.00828351, -0.02805316, -0.18195078, -0.05076352, -0.23360567, 0.03816566, 0.00114448, -0.12190461, 0.03554742, -0.02092934, -0.20276794, -0.17568900, -0.06305127, 0.06151380, -0.00114475, -0.19243146, 0.04318719, -0.10281909, 0.03350404, 0.06414130, 0.00091802, -0.04434915, 0.04913313, 0.04989836, -0.00630318, 0.08403360, 0.04631856, -0.04733685, 0.09351023, -0.02040863, -0.00766840, -0.01158366, 0.06237150, -0.02862402, 0.00495947, -0.06539297, 0.12990449, -0.16395219, -0.01857348, 0.02725092, 0.06535169, 0.03765154, 0.03088959, -0.03537560, 0.11124016, -0.26026806, 0.01432083, -0.01132442, 0.03467757, -0.00853931, -0.03367602, -0.01342290, 0.07442814, -0.29064199, 0.00324711, 0.03485381, -0.08112518, -0.01053789, -0.03724934, 0.03544934, -0.07015675, -0.11536835, 0.01986922, 0.02700843, -0.05886672, 0.03313870, -0.05782884, -0.01489211, -0.07282177, -0.06756930, -0.03455073, 0.15632045, -0.05857410, -0.03297507, -0.07487974, 0.03347888, -0.17542824, 0.02114593, -0.00608230, 0.14559318, 0.01044504, -0.05595254, -0.07338818, -0.01124488, -0.27351448, 0.06629290, -0.07593498, 0.06247366, -0.02692948, -0.01078267, 0.02104648, -0.03124790, -0.21833248, 0.11520788, -0.01175224, 0.09550861, 0.05366068, 0.04535898, -0.24320462, -0.02432738, -0.04034729, 0.09506402, 0.02910906, -0.11462524, 0.04265987, -0.07948148, -0.17109109, -0.04722396, -0.01967121, 0.06046079, 0.02513193, -0.24631374, 0.06993380, -0.12620120, 0.06523513, 0.01501863, -0.02529032, -0.02680470, -0.00639505, -0.01423702, 0.02952106, -0.03101204, -0.04969731, -0.02207822, 0.07651357, -0.07794310, 0.01504405, 0.06719263, -0.08444661, -0.04498573, -0.01189651, -0.02773257, 0.17682466, -0.23781213, -0.07665901, -0.06107870, 0.00278263, -0.07335833, 0.05673065, -0.05173473, 0.14794770, -0.32911423, 0.02869601, 0.09874780, -0.03974917, -0.02011569, -0.00792703, -0.08709922, 0.01942015, -0.27532786, -0.07094145, 0.03716580, -0.06014293, -0.11483906, -0.18257858, -0.10099088, 0.03194556, -0.08066089, -0.14352046, 0.02414996, -0.13988405, -0.06883438, -0.15907900, -0.12271375, -0.01333203, -0.04425431, -0.01083900, 0.16862093, -0.11255523, -0.05421169, -0.14141786, 0.03725612, -0.01598295, 0.01076784, -0.01107130, 0.18491383, -0.14482772, -0.03669673, -0.05509303, -0.01194234, -0.12778945, 0.04808246, 0.04977169, 0.20565996, 0.03144882, -0.02913842, -0.01872685, -0.01568587, -0.03460154, 0.09871102, 0.07895801, -0.03446224, 0.11531913, 0.04527627, -0.07287310, -0.02282137, 0.14638419, 0.12852430, -0.04240368, -0.10288979, -0.00899618, -0.01529714, 0.09047304, 0.05882315, 0.18677863, 0.08134712, 0.06296146, -0.15002386, -0.01162817, -0.01594731, -0.00234388, -0.12500669, 0.00151590, 0.06363595, -0.03501818, 0.03948330, -0.00337603, -0.06937130, 0.00002882, -0.06722037, 0.12200366, -0.10784511, -0.02376834, 0.07849043, -0.00104237, -0.02040432, 0.06745389, -0.06220241, 0.36851948, -0.15854190, 0.05630423, 0.06976194, -0.08637272, 0.01060699, 0.04923547, -0.11298022, 0.35441515, -0.34352025, -0.04151366, 0.08763710, -0.00463403, -0.10247980, 0.05618670, 0.01669119, 0.15903312, -0.40234426, 0.00385439, -0.02004030, -0.04745252, -0.15333009, -0.00475028, -0.14786622, 0.11785721, -0.19107318, -0.09039389, -0.06855400, -0.05243057, -0.17966583, 0.04939185, -0.06956218, 0.12778619, 0.08242095, -0.07267909, -0.09061260, -0.12253682, -0.11294997, 0.03158084, -0.19973077, 0.03904048, -0.01063586, -0.00013430, -0.05186522, -0.14785703, -0.01227612, 0.07467418, -0.08617243, 0.14194945, 0.06617337, -0.02889789, -0.08193889, -0.00830891, -0.02425305, -0.09560949, 0.00219014, 0.10703203, 0.09922467, 0.07913505, -0.23737831, 0.07886302, -0.01340814, 0.04221469, 0.03258659, 0.21849725, 0.06143444, 0.03309219, -0.21663041, 0.05181406, 0.00055446, 0.19379598, 0.15890160, 0.31261927, -0.07363632, -0.01037600, -0.02560878, -0.05816510, 0.14131348, -0.08605012, 0.00867550, 0.09420756, 0.08535466, -0.08404229, -0.07267879, 0.06332081, 0.01613702, 0.13108370, -0.04615486, 0.24892814, 0.00574472, 0.05147403, -0.10309494, 0.00657527, -0.02710174, 0.16199477, -0.14007324, 0.27804613, -0.27157590, 0.04450650, -0.11667390, -0.05826654, -0.05586996, 0.10195543, -0.10437483, 0.18819445, -0.42450854, -0.04157472, -0.08945855, -0.01556003, -0.10576544, 0.11730903, -0.01998291, 0.15431368, -0.41675755, 0.07553858, -0.12112319, -0.10367144, -0.08665650, 0.07906675, -0.03461182, 0.12963551, -0.15711656, -0.00739458, -0.18442225, -0.06824257, -0.04870109, 0.08513460, -0.00231961, 0.08528458, 0.09998196, 0.03052694, -0.20675819, -0.04207917, -0.03654088, 0.12767351, -0.11792089, 0.10178927, 0.03852270, -0.03596777, -0.21772183, 0.01984993, 0.03336201, 0.13417251, -0.11114232, 0.22546586, -0.00615425, 0.02327536, -0.26934102, 0.10083898, 0.00728480, 0.05273447, 0.02411901, 0.14097676, -0.01554323, -0.03679452, -0.20389178, 0.02867834, -0.07670332, 0.14623378, -0.03248890, 0.17825553, -0.11839935, 0.09845875, -0.15402067, 0.01008024, 0.00266989, 0.16160217, 0.11331213, 0.29049119, -0.15716144, 0.10794490, 0.19111153, -0.05107509, 0.06953697, -0.00093729, 0.08271734, 0.13090390, 0.06235547, 0.06974740, 0.03491372, 0.05435760, 0.08005828, -0.01233355, -0.02088420, -0.00745825, 0.00668772, 0.05751657, 0.00585702, 0.10565530, 0.09084707, 0.04120446, 0.03045955, 0.01016658, -0.08638018, -0.05131314, -0.17301644, 0.01664339, 0.03725960, 0.18471454, -0.01538469, 0.18882622, -0.17040560, 0.01643483, -0.23547126, 0.07315986, 0.05670652, 0.19416521, -0.04552897, 0.14848918, -0.10389428, 0.06951479, -0.21031822, -0.00776089, 0.01125092, 0.20646991, 0.00076959, 0.11810423, 0.03878453, 0.06256163, -0.09560658, 0.11597583, -0.00337482, 0.12780710, 0.07403277, -0.02250651, 0.10007046, 0.09904327, -0.07944262, 0.06393960, 0.02056054, 0.12110755, 0.08569732, 0.11936188, 0.02740359, 0.00342300, -0.09883285, 0.03737047, 0.03223613, 0.03417212, -0.03604615, 0.11819496, -0.08286573, 0.02243684, -0.12963970, -0.01078538, -0.07929061, 0.08982969, 0.10226494, 0.08580916, -0.05635475, -0.04933061, -0.08079281, 0.02289470, -0.05747124, 0.01103553, -0.01279140, 0.22382575, -0.16319081, -0.05048093, 0.04795368, -0.01540849, 0.02364041, 0.16522427, 0.15635705, 0.18731298, -0.18404873, 0.06920125, 0.30151826, -0.01154960, 0.17734119, 0.07212934, 0.02388702, 0.09723040, 0.01166881, 0.07148839, 0.05051054, 0.01536070, 0.08523123, 0.06344551, -0.01560074, -0.01211303, 0.06687962, 0.00537461, -0.06602901, -0.05381998, 0.02851173, -0.08027952, 0.00487344, 0.02111540, 0.06782958, -0.05828485, -0.08251429, 0.07507664, -0.02710271, 0.01777744, -0.07813890, 0.04791499, 0.04562813, 0.07677694, -0.11893718, 0.00795703, 0.06917419, 0.15099478, -0.07155348, 0.10643411, 0.13606393, 0.12050433, -0.06229553, 0.05384824, 0.06686450, 0.21758460, 0.05765596, 0.12056097, -0.04956500, 0.07128307, -0.14586048, 0.09675349, 0.13093071, 0.06350361, -0.00411383, 0.12283245, -0.05662207, 0.05187740, -0.12640637, 0.16008152, 0.11792906, 0.10431200, 0.09216186, 0.15862191, -0.06840250, 0.03795595, -0.07201853, 0.01434140, -0.02774247, -0.01012637, 0.06171496, 0.09948234, -0.16695374, 0.02064094, 0.06040374, 0.07677585, -0.03638548, -0.02402704, -0.00376674, 0.16419938, -0.20148683, -0.00102223, 0.18062291, -0.08008802, -0.03996267, 0.02539063, 0.08841320, 0.17775777, -0.14418980, -0.08926408, 0.24835137, -0.09758785, -0.02955821, 0.23929724, -0.04707327, 0.14129716, -0.16772096, 0.02497246, 0.16561201, -0.14997740, 0.09014031, 0.03165302, 0.07115348, 0.02818966, 0.02468913, 0.07133142, -0.03393050, 0.06696656, -0.01152828, 0.01605171, -0.01872383, 0.00032814, -0.00014738, -0.00621382, -0.11634986, -0.03208481, -0.03649826, -0.01444700, -0.03583330, -0.00485175, 0.08959267, 0.00939535, -0.10116697, -0.03110923, 0.05178682, 0.00705591, -0.07307520, -0.07359902, 0.07079309, -0.00608687, -0.02831942, 0.05024537, 0.02480231, 0.12094730, -0.02357048, 0.02381701, -0.01904438, 0.06127184, -0.10485628, -0.01824526, 0.02397964, 0.05606643, -0.02755561, 0.03224963, -0.18647209, 0.00110010, -0.06192430, 0.05007902, 0.06067490, 0.07840168, 0.02800651, 0.01275819, -0.22903800, 0.03802440, 0.04641071, -0.02171888, 0.10546009, 0.01033090, 0.13687521, 0.06911375, -0.17438377, -0.04933313, 0.13415436, -0.02382413, 0.02343791, -0.01008166, 0.08257977, 0.01959090, -0.12442531, 0.05839374, 0.24750483, 0.05924641, -0.02352569, 0.11234558, 0.15884823, 0.14566369, -0.01455488, 0.05038268, 0.30133274, -0.01120912, -0.06021690, 0.06750476, 0.01294472, 0.17887582, -0.09388673, 0.00120520, 0.26508495, -0.03479623, -0.07981119, 0.24832998, -0.05886022, -0.01274613, -0.07617290, 0.02518430, 0.08850464, -0.01681743, -0.00486730, 0.01765228, -0.10446695, -0.12923920, -0.05068139, 0.05509347, 0.00167862, -0.10527138, -0.05007123, -0.04791198, -0.01907551, -0.16863570, 0.11849102, -0.02017561, 0.05574856, 0.04616034, 0.05825794, 0.05196681, -0.01185207, -0.15795699, 0.06873739, 0.00138871, -0.07441557, 0.06094429, 0.02320200, 0.03959471, 0.07297557, -0.14286128, -0.03828053, -0.02053385, -0.02355198, -0.01842175, 0.05634274, 0.10295482, 0.06711296, -0.16848716, -0.24807529, 0.01197831, 0.12088129, 0.02768251, 0.11670569, 0.07876396, 0.05583912, -0.14791682, -0.25723347, -0.03507972, 0.04641877, 0.03623501, 0.01339004, 0.00013452, -0.01223255, -0.13015795, -0.30985388, 0.00889492, -0.02880716, 0.01093973, 0.00936840, -0.07227451, 0.13798076, -0.11994363, -0.21537711, 0.03529210, 0.09291087, -0.03552646, -0.04773656, 0.01362374, 0.18502401, 0.09075022, -0.07347643, 0.04925352, 0.22593261, -0.05097556, 0.07141677, 0.02179199, 0.18885705, 0.01108710, 0.00892076, 0.04152549, 0.09337090, 0.00166522, -0.00908936, 0.10496685, 0.04080974, 0.04931067, -0.11550130, -0.06988362, 0.16789301, 0.03208402, -0.05755119, 0.15778853, -0.03898013, 0.08909899, -0.09164417, -0.06041538, 0.09678511, -0.11578918, -0.01246891, -0.07797451, -0.21577102, 0.03118631, 0.06953862, -0.00189820, 0.00182643, -0.03686906, -0.04459475, -0.09086709, -0.23000905, -0.05855068, 0.05163164, -0.06692438, 0.00458589, -0.01827733, 0.00491917, -0.00876875, -0.15892854, -0.08894572, -0.03915340, -0.02941532, 0.07316779, -0.00369594, 0.03706103, -0.05756988, -0.10742005, -0.21955174, -0.10032091, -0.02899971, 0.08067424, -0.05113139, 0.02814083, -0.06067245, -0.04823489, -0.14107105, -0.17144676, -0.05528734, 0.03180570, -0.02985580, -0.04706470, -0.03217758, 0.09248525, -0.07170673, -0.19914903, 0.05686612, 0.05316280, -0.04147434, -0.01784779, -0.19566128, 0.08162328, -0.10067106, -0.23043664, 0.07575470, 0.01010575, 0.07407224, 0.00421763, -0.24417888, 0.11085594, -0.06842966, -0.06786389, 0.07777432, -0.01491096, 0.00163430, 0.06454033, -0.13589889, 0.03033491, -0.13378756, -0.02007728, 0.01230429, 0.16351873, 0.06003516, 0.02486307, -0.08533284, 0.05246282, -0.02361199, -0.04090619, -0.04336596, 0.12042104, 0.00418077, 0.02321588, 0.02601160, 0.06181395, 0.07249112, -0.04601147, 0.05789946, 0.13146627, -0.03170372, 0.01556214, 0.00283951, 0.08860940, 0.07052626, 0.06418594, 0.08411868, 0.07404578, -0.03537665, 0.04452280
+    .float 0.03729475, 0.11534624, 0.09065277, 0.04387054, 0.12186608, -0.00594862, 0.08559746, 0.08835278, 0.11898565, 0.12445130, 0.04306158, 0.07022585, 0.03143160, 0.04837716, 0.05241746, 0.14569381, 0.09042954, -0.06715168, 0.01902485, 0.03230568, 0.07645365, 0.03004823, 0.05192613, 0.09842204, 0.09988926, -0.01216685, 0.03636889, 0.03624255, 0.07177436, -0.09289292, 0.09571574, 0.10130163, -0.02682072, 0.01536661, -0.03177361, -0.11235270, 0.07115827, 0.01593650, 0.04727833, 0.11532795, -0.02588823, 0.03610470, -0.04463482, -0.10846111, 0.02406281, -0.04507493, 0.01468776, 0.09592789, 0.01295658, 0.15770932, -0.04374633, -0.13856563, 0.01332130, -0.08754090, -0.01152540, -0.04666430, -0.07495376, 0.00856342, -0.12726803, -0.11283474, -0.04772660, -0.07445782, 0.05906313, 0.03596683, -0.10642023, -0.04771368, -0.04127482, -0.15290919, -0.03240176, -0.12909001, 0.04186323, -0.08413179, -0.09968959, -0.10890622, -0.16243769, 0.02322844, -0.09147861, -0.16228618, 0.00244220, -0.05988677, -0.08450741, -0.15773031, -0.04089832, -0.07364952, -0.12851553, -0.10916623, -0.09461443, -0.07318429, -0.03555223, -0.13733570, -0.10175650, -0.10474411, 0.02366101, -0.00330928, 0.01209290, -0.02448704, 0.10154896, 0.10234359, 0.03581459, -0.02934539, 0.04621969, 0.06152453, 0.11731321, 0.04439593, 0.06749498, -0.03009277, 0.05409730, -0.04422697, 0.01197460, 0.02088784, -0.01193103, 0.09082973, 0.07940719, 0.03374597, -0.04119045, -0.04520231, 0.03039328, 0.01537696, 0.07662258, 0.02783500, 0.04473861, -0.02193317, -0.01560562, -0.04482220, 0.00638650, 0.12231727, 0.00574756, 0.05904403, 0.03718563, -0.00224352, -0.02449456, -0.03075506, 0.01560691, 0.20471767, 0.08567638, 0.10749099, -0.01362414, 0.05446113, -0.06991362, 0.05655463, -0.02174403, 0.15237539, 0.00194173, 0.07143000, -0.05084143, 0.03975303, -0.04482661, -0.10133149, 0.07422315, 0.20338517, 0.00610346, -0.00099567, -0.10638966, 0.00364268, -0.08277179, -0.08226507, -0.00966097, 0.21755917, 0.04030724, -0.02522565, -0.03008512, -0.01686295, -0.19184366, -0.07076456, -0.01626601, 0.11161176, 0.08594830, 0.01326913, -0.04515247, -0.05481357, -0.07577937, 0.02143126, 0.03589225, -0.07754341, 0.01104484, -0.03570145, -0.09416048, -0.11733317, -0.10468049, 0.00598488, -0.03562735, -0.05368122, -0.06263059, -0.10096018, -0.10551704, -0.22412285, -0.03705711, 0.00762402, 0.04986022, -0.05889495, 0.04946505, -0.05973493, 0.19128707, 0.12709153, 0.04714549, 0.03340105, 0.09400751, -0.00543544, 0.05720745, 0.09318016, 0.06460252, 0.02173526, 0.04568545, -0.07762381, 0.03603061, 0.06068366, 0.08202044, 0.13233697, -0.02590165, 0.06856713, 0.08711527, -0.20840913, 0.05898151, -0.00355485, 0.00830869, 0.08796018, -0.00553805, 0.09342966, 0.02661545, -0.25671181, 0.09751582, 0.13332275, 0.09372637, 0.11528607, -0.02215881, 0.06512007, 0.09537710, -0.42303097, 0.08833919, 0.13634408, 0.03062085, 0.03446479, 0.00907231, 0.01399849, -0.03049749, -0.22616014, 0.06161757, -0.00104519, 0.04271097, 0.04331235, 0.05600452, 0.06909107, -0.14016075, -0.03247870, -0.01017011, 0.08488886, -0.00529867, 0.07892594, -0.09259698, 0.04427401, -0.16710623, 0.09468497, 0.06349915, -0.05632502, -0.04072428, 0.01653885, -0.12386255, 0.02556504, -0.26016465, 0.10426643, 0.01920427, -0.07760195, 0.04770742, 0.06122459, -0.06838488, -0.01651009, -0.25455153, 0.09984984, 0.04248600, -0.11877263, 0.10470583, -0.02152321, -0.01660323, -0.12400756, -0.24371587, 0.04641808, 0.02006953, -0.25288689, 0.11072462, -0.03640262, -0.10860091, -0.14975677, -0.07297155, 0.06470668, 0.05445863, -0.21965750, 0.05884970, -0.05783071, 0.08689777, 0.00553673, 0.06491883, -0.02066776, 0.08381747, 0.04301991, 0.05413403, 0.09051801, 0.10465817, -0.03064988, 0.06951194, -0.10028575, 0.04536496, 0.09078231, 0.01836943, 0.08276492, 0.08592609, 0.04134121, 0.11237094, -0.27987483, 0.12093296, 0.07159111, -0.06785914, 0.06212655, 0.13394247, 0.06453954, 0.09998959, -0.48990178, 0.05266737, 0.02958421, 0.01220445, -0.02521376, 0.11818503, -0.00266920, 0.18703736, -0.50319749, 0.04763027, 0.11944795, -0.02222491, -0.07288104, 0.09100725, 0.04085600, 0.15789500, -0.38733801, -0.05092550, 0.12269427, -0.06002676, -0.04240157, 0.13748318, -0.03057850, 0.03942685, -0.03397243, 0.10555808, -0.00851297, 0.03418990, 0.04217283, 0.18018499, -0.01695492, -0.13522357, 0.03198440, 0.05416794, -0.10875501, 0.05448033, 0.06198048, 0.14002579, -0.03061940, -0.23015276, 0.06700514, 0.04146153, -0.17575540, 0.07518457, 0.04885781, 0.07327067, 0.05030624, -0.18426624, 0.10314677, -0.00103535, -0.28914824, 0.00248960, 0.12935980, -0.07845931, -0.00110470, -0.23981804, 0.05572409, 0.07661815, -0.34174347, 0.08823825, 0.08122890, -0.28725722, 0.00489757, -0.06167927, 0.10060817, -0.01684800, -0.16437574, 0.08446624, -0.07820319, 0.07494932, 0.01363802, -0.04700302, -0.10679318, -0.00243857, -0.01593083, -0.06253914, 0.01060287, 0.14496562, -0.01037849, 0.02515535, -0.07564234, -0.03371858, -0.00352837, -0.01909264, -0.12551123, 0.08748907, -0.08589566, 0.16944003, -0.21107671, -0.06839247, 0.01204866, -0.04936138, -0.04040464, 0.15917392, -0.09542932, 0.21610786, -0.29614741, 0.00587544, 0.07529031, -0.07663242, -0.13239990, 0.05122900, -0.04494915, 0.30821788, -0.38928339, 0.07614937, -0.00238547, -0.02367494, -0.03266613, 0.15787980, -0.06335231, 0.21306430, -0.23884764, 0.01551063, -0.06538609, -0.13219006, -0.02336904, 0.18522823, -0.05708120, 0.21913217, 0.00486003, 0.02695257, -0.05934402, 0.01832915, 0.07836404, 0.18364622, -0.01389702, 0.04093547, 0.02721439, 0.06150109, -0.14499272, 0.07255501, 0.06528743, 0.25079972, 0.06018026, -0.00273121, -0.04266651, 0.04279469, -0.17102189, 0.05923638, -0.00597459, 0.11321455, 0.01947152, -0.03181433, 0.01239696, 0.00656459, -0.19952695, 0.07910625, 0.06081140, -0.15711018, 0.11354851, -0.09667930, 0.07318649, -0.00314747, -0.07724297, 0.08543681, -0.00238362, -0.23250854, 0.14533229, -0.03111688, -0.04726014, -0.05257717, -0.02920095, -0.03853247, -0.09209373, 0.09608611, -0.02977307, 0.00597287, -0.00813764, -0.12915671, 0.05775066, 0.01184802, -0.01817820, -0.05238255, -0.18540280, 0.05732960, -0.04548302, -0.09118037, -0.02987889, -0.14869289, -0.15817451, -0.01485489, -0.08998268, 0.09243213, 0.01007084, -0.09502372, -0.01445975, -0.13644075, -0.10595063, 0.06124093, -0.14130749, 0.16587777, 0.11573546, -0.11399066, 0.00893185, -0.16270633, -0.22058491, 0.09369631, -0.12704690, 0.26085576, -0.00039467, 0.00937344, -0.09960020, -0.07689711, -0.01994767, 0.15103216, 0.01737313, 0.39554039, -0.27021134, -0.02625536, 0.03422694, -0.06324005, 0.06168275, 0.10184056, -0.03236446, 0.25283122, -0.14263612, 0.11510659, -0.03034356, -0.02915820, 0.08431245, 0.12774476, 0.07696877, 0.07196496, -0.19949113, -0.04400803, -0.14618427, 0.02989430, 0.00534943, 0.14818844, 0.08449881, 0.09142755, -0.14522567, -0.07745238, -0.09191427, -0.03824333, -0.02303873, 0.10911316, 0.00552905, 0.02432068, -0.06893945, -0.04048098, -0.06670932, -0.08184895, -0.05221603, -0.04273265, -0.03609487, -0.05376621, -0.13747223, -0.10577582, 0.08082470, -0.07334083, -0.12387479, -0.00747663, -0.10203706, 0.02081126, -0.09835625, -0.09998481, 0.03860208, -0.07750050, -0.18197867, 0.05983179, 0.09963398, 0.03794197, 0.02006446, -0.03806951, 0.09088425, 0.03883099, 0.00093683, -0.13452582, -0.04363574, -0.08339290, -0.04871999, -0.20408750, -0.10762352, -0.15359417, -0.18850482, -0.18761225, -0.12815021, -0.03972384, 0.09710041, -0.15596358, -0.10288744, -0.13301560, -0.11488600, -0.19115040, -0.04667637, -0.02180507, 0.05036942, -0.18550135, -0.14109308, -0.08512951, -0.12107081, -0.06925669, -0.11569143, 0.05783843, -0.08439169, -0.05437217, 0.03616842, -0.09606219, -0.05271259, -0.03755066, -0.03255225, 0.18139057, -0.34356707, -0.01089982, 0.11319757, -0.04219190, 0.10219534, -0.00091086, 0.04590411, 0.01321363, -0.27827108, -0.00652464, 0.10198350, 0.08197105, -0.01895865, -0.02036331, 0.01676012, -0.09007483, -0.25128224, -0.05652374, 0.02359154, -0.04330505, -0.05155127, -0.00809796, 0.07561108, -0.04257131, -0.03642815, -0.09581839, 0.13264406, -0.07744745, -0.03154917, 0.02679628, -0.02197159, 0.01152229, -0.09984319, -0.02618029, 0.05455044, -0.00591040, -0.03862038, 0.00494712, -0.13406172, 0.04174361, -0.05548096, -0.14394300, -0.04942213, -0.13275237, -0.09020579, 0.12632331, -0.16319649, 0.02529685, -0.01593383, -0.05630991, -0.16462222, -0.14741801, -0.12137675, 0.03024442, 0.03190824, 0.00812759, 0.04372472, 0.06474227, 0.08343703, 0.02378250, 0.07797937, -0.02363200, -0.02462859, 0.05367241, 0.05896364, -0.14517541, -0.03434656, 0.04126569, -0.08675927, -0.09237108, -0.01473602, 0.01680658, -0.02458650, -0.10332366, -0.10133383, -0.03029397, -0.09079169, -0.19603132, -0.02632694, -0.08826849, -0.19899274, -0.11688091, 0.06552052, -0.03722748, -0.19013298, -0.12803406, 0.03002263, -0.02170380, -0.30426228, -0.08530250, 0.11658093, -0.06596407, -0.08166464, -0.14817712, 0.03033719, -0.01194126, -0.34089163, -0.06837696, 0.16483569, -0.09592487, -0.03761692, -0.23416510, 0.06357368, 0.03243517, -0.16856694, -0.04305808, 0.11171719, 0.02442874, -0.03520702, -0.02754246, 0.05090414, -0.03990904, -0.09716605, -0.10535660, 0.07578825, -0.00657908, -0.07247265, 0.01020920, 0.03194363, -0.08215924, -0.07006247, -0.08513580, 0.03088170, -0.04901643, 0.04146420, 0.03606506, 0.07534914, -0.17894335, 0.00321356, -0.04474623, 0.00604936, 0.02827386, -0.06705834, 0.03075261, -0.10210877, -0.18071440, -0.05013144, 0.01178860, -0.06204030, 0.01412655, 0.00772420, -0.15010035, -0.15737629, -0.13310142, 0.07405274, 0.07502250, -0.14925463, 0.04507424, -0.14087144, 0.02871449, 0.12813455, -0.01203491, -0.06007332, 0.01257850, 0.09343444, 0.14175332, 0.04100810, 0.04530596, 0.16139370, -0.00635719, 0.07357121, -0.01248946, 0.08177637, 0.14539804, 0.00051876, -0.08982311, 0.07124313, 0.03622437, -0.24531691, -0.02564720, 0.13757615, 0.10563028, 0.05129968, 0.00377775, 0.06960078, 0.11228672, -0.33580166, 0.00044723, 0.02278957, 0.00866677, -0.00412502, -0.07937396, 0.05832772, 0.12111264, -0.24692175, 0.00548804, 0.15158029, -0.03923285, 0.02653594, -0.13663577, 0.05049216, 0.10212696, -0.38050473, -0.07120597, 0.18233064, 0.02667900, -0.00935563, -0.04273104, 0.04874950, 0.03837679, -0.26498133, 0.01991280, 0.10174864, -0.05572964, -0.02366795, 0.13161299, 0.10110953, 0.00160879, -0.03307313, -0.05442486, -0.02902263, -0.11670892, -0.07191937, 0.02902065, -0.04963301, -0.11635207, 0.05042283, 0.05105891, 0.06065152, -0.07171469, 0.08048817, 0.02137419, -0.04318744, -0.07162042, 0.08188824, 0.09548308, -0.12243682, -0.00166692, 0.00704781, -0.07337906, -0.00076760, -0.15371688, 0.04935790, 0.06531114, -0.27456459, -0.01459682, 0.05050683, -0.18796706, -0.05362831, -0.07268348, 0.08134533, -0.05075532, -0.17250396, 0.08867449, -0.02979309, 0.08608986, -0.00239519, 0.05896299, -0.04682040, 0.10926078, 0.10642052, 0.02428344, 0.02973970, 0.00425757, 0.09980092, 0.01285509, -0.03289494, 0.12065952, 0.07964323, 0.04724053, 0.08051715, 0.02013411, 0.08133349, 0.00135279, -0.34283981, 0.01459900, 0.08966009, -0.02423538, 0.08571010, -0.09107761, 0.08896646, 0.07348309, -0.36069146, 0.01180250, 0.13522856, 0.03091238, -0.02000812, 0.03578358, -0.01544957, -0.02356040, -0.42485413, 0.04031500, 0.10586331, -0.04789180, -0.01068902, 0.04734908, -0.05736029, 0.06208891, -0.41593149, 0.03682909, 0.08121767, -0.02578601, -0.08854207, 0.06681862, -0.07005436, -0.01141675, -0.17495777, -0.01450972, 0.01814503, -0.08576179, 0.02597138, 0.09621163, -0.01429069, 0.11049499, -0.03376618, 0.08986989, -0.04412461, -0.02373551, -0.00664678, 0.05175451, -0.00118682, 0.04025273, -0.04191088, 0.03650279, -0.10004232, -0.00680090, 0.09577936, 0.10026649, -0.05694260, -0.04134426, 0.00227202, -0.01973310, -0.16763736, 0.06619978, -0.03033684, -0.07242492, -0.04326221, -0.03829844, -0.00827963, 0.01870091, -0.22740468, 0.01410892, 0.06738977, -0.31088465, 0.00905780, 0.04214961, 0.00319092, -0.07500158, -0.15004925, 0.04827295, -0.05979498, -0.04919958, 0.05772648, 0.10034089, -0.02541883, 0.06612120, 0.02838210, 0.11227790, 0.04495607, -0.01571602, 0.00383358, 0.20187624, -0.10865314, 0.02480149, -0.01460904, 0.09683014, 0.03593308, -0.00515793, -0.01450954, 0.16148545, -0.37585092, 0.00574605, 0.01396129, 0.01668629, 0.09064169, 0.04362257, 0.09275596, 0.21026866, -0.39644876, 0.07785530, 0.16105980, 0.10532624, 0.10939199, 0.06740990, 0.00120770, 0.22862710, -0.48225793, 0.01562085, -0.07298443, 0.04134146, 0.05869547, 0.12166467, -0.00728134, 0.21099633, -0.28545564, 0.09978186, -0.01228468, 0.01141190, -0.04361145, 0.08892570, -0.03715662, 0.20977953, -0.08034666, 0.03918276, -0.13934223, -0.00818684, 0.05701590, 0.11873069, 0.02488128, 0.28001106, 0.00302196, -0.02585888, 0.00850061, -0.05805232, 0.06166129, 0.15290433, -0.02390338, 0.15803322, -0.02829488, 0.06474657, 0.00767440, 0.04663876, 0.02319135, 0.05835881, -0.03910623, 0.11329289, -0.00712454, -0.03813448, -0.15864165, 0.06947006, 0.02874139, 0.11144079, -0.06371209, 0.06700096, 0.02514546, 0.02739302, -0.05168079, -0.04879398, -0.11455234, -0.11504579, 0.02169710, 0.03030470, -0.03074911, -0.03007908, -0.12615180, 0.02800468, -0.10637725, 0.12857002, 0.17454003, 0.04665780, -0.00294128, 0.08022188, 0.08487704, 0.09990297, 0.11274192, 0.09753878, 0.24551941, 0.05514941, -0.07150446, 0.13657013, -0.00512315, 0.04582512, 0.12203727, 0.01917973, 0.21997578, 0.20754811, -0.22141877, 0.00766291, 0.05037889, 0.15770157, 0.06736491, 0.12762964, 0.11898671, 0.21877600, -0.17128275, 0.03032405, 0.06282424, 0.07775731, 0.06496263, 0.14807677, 0.04037134, 0.31269479, -0.09713528, 0.05133554, -0.05000197, 0.03437343, 0.07699610, 0.16442202, 0.01014784, 0.38866389, -0.11613765, 0.04791155, -0.12365861, 0.02327952, 0.02015737, 0.22950043, -0.03291946, 0.31270623, -0.08130202, 0.03484926, -0.18421271, -0.06304097, 0.04371230, 0.23266986, -0.04867207, 0.24024782, -0.04464686, 0.02474656, -0.10529205, -0.03397562, -0.00526519, 0.22145630, -0.11424383, 0.05183674, 0.00436092, 0.01282592, -0.08764856, 0.00363465, -0.02579005, 0.17522722, -0.05849447, -0.02124424, -0.03294745, 0.06024746, -0.07263991, 0.00967823, -0.11181909, -0.09114743, -0.08965067, 0.01717559, 0.03492329, -0.12802005, -0.07262553, -0.10715898, -0.05957478, -0.02963110, 0.01942202, -0.06006032, 0.02621592, -0.02044947, 0.02569454, -0.02128792, -0.07173379
+    .float -0.00874824, -0.03555091, -0.05796845, -0.11953424, -0.09282988, 0.01213999, -0.02663040, -0.02661830, -0.03694278, -0.05415419, -0.01300463, -0.12143674, -0.07251213, -0.05816801, -0.07313535, -0.03725196, -0.00713152, -0.09586711, -0.07809929, -0.09423898, -0.18221818, -0.12349251, -0.14605601, -0.17123441, -0.16752383, -0.19742772, -0.20104073, 0.02710817, -0.17178102, -0.06962307, -0.21158883, -0.28915474, -0.14725965, -0.18433179, -0.13787062, -0.05848496, -0.20967053, -0.03834108, -0.13988511, -0.20030701, -0.11981124, -0.12011483, -0.03502194, -0.08348132, -0.32071692, -0.02431815, -0.10809352, -0.16229573, -0.04473761, -0.01974039, 0.02252338, -0.01675937, -0.16337587, -0.01032433, -0.02668867, -0.11002958, -0.04882527, -0.11491600, -0.01970026, 0.04235622, -0.05785977, 0.02894786, -0.11159675, -0.10586584, 0.07351337, -0.01785079, -0.00372518, 0.04637637, -0.04503218, 0.10945306, -0.06329214, 0.10190362, 0.01651113, 0.00718160, 0.04251005, -0.03411453, -0.08344391, 0.10067098, -0.04176159, 0.08921457, 0.12820135, -0.00266270, 0.00226511, -0.03781906, -0.01212254, 0.10101877, 0.00908981, 0.06188235, 0.05571557, -0.10424853, -0.06739441, 0.00446353, 0.06626862, 0.00063028, -0.02801271, 0.11797434, 0.00725801, 0.06768234, -0.08867823, -0.13182157, 0.03726241, 0.00895843, -0.02846785, -0.01493894, 0.00569746, 0.04350867, -0.09604523, -0.13123617, 0.01744345, 0.00025446, -0.06995954, 0.03238173, 0.00031048, -0.01876535, -0.12898411, 0.00820868, -0.04330667, -0.10446400, -0.05175425, -0.09122661, 0.04184103, -0.03330651, -0.07087097, 0.06800938, -0.10779905, -0.17361940, -0.14026079, -0.20479655, -0.03214647, 0.04461723, -0.06843263, 0.19426596, -0.16962095, -0.12992713, -0.08005808, -0.25147244, -0.09903008, -0.03817166, -0.08448586, 0.23408578, -0.09323715, 0.01437316, -0.16707408, -0.12118699, -0.05804272, 0.05309593, -0.09622972, 0.22868615, -0.04820525, -0.04974826, -0.09902364, -0.05902599, -0.04613399, -0.07091372, 0.11730877, 0.25426447, 0.00824910, -0.03512347, 0.00063526, -0.06193409, 0.07464293, 0.00530995, 0.05243399, 0.21987860, -0.04081694, 0.08696765, 0.01152952, 0.04230264, 0.11720648, 0.02418824, 0.08701701, 0.17832883, 0.01002658, 0.09216595, 0.07027997, 0.05727874, 0.06616640, 0.09168386, 0.13089517, 0.09536695, 0.12899822, 0.11989716, 0.12816174, 0.12320551, 0.05547900, 0.09409789, 0.11833870, 0.08529826, 0.13527317, -0.10131663, 0.02308336, 0.13192630, -0.03230910, 0.03865352, -0.02244807, -0.14422794, 0.00646421, 0.01884894, 0.06087431, -0.00116439, 0.05212910, -0.06345049, -0.08003681, -0.04118900, 0.04473908, -0.10943440, 0.00180487, -0.01867159, -0.11417368, 0.06107660, -0.05742557, 0.09362965, -0.07292442, -0.04996780, -0.00462475, -0.05812101, -0.09700722, -0.08241821, -0.13909557, 0.35500062, -0.10891759, 0.01311103, -0.12493171, -0.09582230, -0.12082057, -0.06771263, -0.13508445, 0.52384406, -0.20571010, 0.10736741, -0.07821932, -0.05555328, -0.08436365, -0.19832109, -0.11800942, 0.48027116, -0.08496138, 0.07262465, -0.10548291, -0.13128732, -0.07547044, -0.20934270, 0.00001626, 0.43515730, -0.08736717, -0.06291071, -0.03262423, -0.08368835, -0.02843690, -0.18106329, 0.11751382, 0.39872718, -0.08455280, -0.02465855, -0.04557879, -0.10499236, -0.01614262, -0.23385295, 0.11917888, 0.31332478, 0.00645325, -0.00512056, 0.00316469, -0.00416471, 0.06044649, -0.08406160, 0.22998868, 0.19041972, -0.02407021, -0.05341041, 0.11440359, 0.00824637, 0.13065420, -0.03350714, 0.14478692, 0.07120281, 0.04842329, 0.03408772, 0.08234534, 0.13796577, 0.04362525, 0.10341986, 0.04436357, 0.07790654, 0.01701576, -0.06073052, 0.09955227, 0.10180380, -0.04825975, -0.02759967, -0.10231961, -0.15330279, 0.01267099, 0.02828282, -0.08567282, 0.06270479, -0.08009819, -0.00714625, -0.12223528, 0.00492144, -0.07616980, 0.02309475, 0.03718269, -0.00577443, -0.11968195, -0.07204114, -0.04238833, 0.16435479, -0.12980253, -0.07862344, -0.00701529, -0.05748763, -0.15545359, -0.07183520, -0.03879513, 0.31197107, -0.05163933, -0.05322586, -0.04226597, 0.01102710, -0.08921669, -0.13346988, -0.07659112, 0.47603595, -0.05716966, 0.00373543, -0.08187520, -0.04680399, 0.00559510, -0.18153302, -0.21688595, 0.28239894, -0.06740610, -0.19603114, -0.03874868, -0.16624525, -0.06774320, -0.10634597, -0.09280629, 0.37878275, -0.04571335, -0.29985708, -0.06937827, -0.05358765, -0.02094596, -0.07856312, 0.04409501, 0.31559640, -0.08459602, -0.08352967, -0.03071126, -0.07704949, 0.09219210, -0.19866806, 0.22690283, 0.33772230, 0.05016849, -0.13200583, -0.04967389, 0.03618729, 0.05136649, -0.16527265, 0.24004462, 0.13717301, -0.01216999, -0.25434223, 0.07754111, -0.00646666, 0.12862405, -0.12529658, -0.02181965, 0.08609103, 0.01002184, -0.19084495, 0.09349275, -0.03528436, -0.05928550, -0.00709034, -0.13821895, -0.01278047, -0.01569417, 0.00877124, -0.01265570, -0.03798641, -0.11690044, -0.06389377, -0.00571936, -0.08982237, -0.06694063, -0.00911846, -0.02588022, -0.02847142, -0.18787618, -0.03092594, -0.00752007, 0.06732046, -0.06188736, -0.01527859, 0.00961496, 0.01428256, -0.04715616, -0.00651575, -0.01764154, 0.21017382, 0.04351940, 0.01152228, -0.03720718, 0.02852607, 0.09734251, 0.01189835, 0.06497282, 0.14606811, 0.00045714, -0.04279114, -0.01255110, 0.05110055, 0.04427961, -0.02673444, -0.04734239, 0.16303359, 0.02655226, -0.11376467, -0.01671754, 0.05612132, 0.05287127, -0.10143755, -0.11357194, 0.20133919, -0.03656301, -0.31504914, -0.03421038, -0.06580672, -0.11694948, -0.10722408, -0.17951059, 0.16433120, -0.06799491, -0.17465252, -0.04497601, -0.00105481, -0.11332687, -0.15674087, -0.08942277, 0.19175859, -0.10018296, 0.09787223, 0.01399612, -0.02767251, 0.05044140, -0.08741150, -0.00337829, 0.19202513, 0.02872064, -0.13925140, 0.02011089, 0.06618647, 0.02529213, -0.17777188, 0.23266304, 0.08981670, 0.04033324, -0.31265947, -0.00401839, 0.00135807, 0.00628108, -0.12118936, 0.02436308, 0.03080309, -0.08776758, -0.26290393, -0.02173286, -0.10506121, -0.05776908, -0.10497323, -0.10460091, -0.11274274, -0.09493066, -0.06736063, -0.12550183, -0.02820676, -0.08837644, 0.01445287, 0.01947077, -0.09507193, -0.02533338, -0.06100756, 0.05964388, -0.02505595, 0.03385682, 0.02003608, 0.09501282, -0.02153372, -0.01992468, -0.05865296, 0.09404433, 0.04724257, 0.14053582, 0.10757209, 0.01628939, -0.02992607, 0.06233100, -0.02155654, 0.12310527, 0.10959917, 0.07895555, 0.07365168, -0.07089318, 0.08363481, 0.09782019, -0.08925740, 0.02092903, 0.02491040, 0.15659888, 0.08778357, -0.07197508, 0.02449359, 0.06081001, -0.02734910, 0.12280773, 0.08055275, 0.03426749, 0.06290054, -0.29801226, 0.04135508, -0.08289870, -0.30104348, 0.07034469, -0.13015333, -0.07590914, -0.05184579, -0.13152419, -0.12878625, 0.03074610, -0.15521181, 0.00315890, 0.00180197, -0.04316830, 0.00433245, -0.17392319, -0.00130061, 0.06524105, 0.00856616, -0.11385404, 0.12196504, 0.03841509, 0.00186308, -0.05711216, 0.09876824, 0.02413742, -0.07429573, 0.03200350, 0.01080956, 0.12472580, 0.03262097, 0.17270625, 0.02205843, 0.04272691, -0.23081122, -0.02197688, -0.02229988, 0.04607708, 0.01813780, -0.02033357, 0.10632548, -0.02495055, -0.13467838, -0.05180737, -0.08372476, 0.03875483, -0.07015894, -0.13471565, -0.13172485, -0.02799738, -0.06747530, -0.10268424, -0.11330259, -0.06369227, 0.00524967, -0.11444317, -0.05180254, 0.08397076, -0.08845997, 0.03188116, -0.04126159, 0.03949041, 0.02094507, 0.04871303, -0.17783390, 0.10226833, -0.05644396, 0.08837511, 0.03198943, 0.09945824, 0.09102359, 0.01242971, -0.17790566, 0.11601149, 0.03611319, 0.06833661, 0.13552321, 0.07639000, 0.01885756, -0.11264074, 0.03806701, 0.05656077, 0.06571171, 0.08583587, 0.05615852, 0.01124883, 0.02218454, -0.12992130, -0.04169207, 0.02782377, -0.01083836, 0.12464299, 0.05818748, -0.17590155, 0.08707784, -0.24245423, 0.00728354, -0.02235815, 0.04759708, 0.07159089, -0.10920610, 0.03541884, 0.13215038, -0.07858887, -0.29432231, 0.08350774, 0.05837834, -0.04107500, 0.00344506, -0.01445069, 0.02377559, -0.07298618, -0.05272290, 0.10405155, -0.05406086, -0.05614520, 0.11078864, -0.02595568, 0.05613127, -0.07159745, -0.00113879, 0.13939860, -0.13930950, 0.07349791, 0.04011424, 0.02691561, 0.12495749, 0.00879971, -0.03570154, 0.11972196, 0.09816765, -0.00238742, 0.04933240, 0.01587815, 0.03619158, -0.04554041, 0.02750828, -0.02188188, 0.05213184, 0.09544459, 0.02118154, -0.08453467, -0.01050830, -0.05709265, -0.05301613, -0.09122830, -0.00112337, 0.01905266, -0.02056052, 0.06673726, 0.02051640, -0.12537774, -0.17349337, 0.04997291, 0.00982460, -0.07550774, 0.00828604, 0.03856764, -0.02993044, -0.01265676, -0.17124596, 0.13793875, -0.00284756, -0.01081886, 0.08182679, 0.02525727, 0.07255761, 0.00496250, -0.32767230, 0.07671695, 0.05316511, -0.03002639, 0.00669294, -0.09279910, -0.01503505, 0.02781844, -0.15796843, 0.01464643, 0.03834681, 0.07318041, 0.07384750, -0.13981007, -0.00821144, -0.07203197, -0.10479352, 0.08768507, 0.03634356, 0.05086501, 0.01173657, -0.06331103, 0.01887579, 0.02892950, -0.17871886, 0.07332940, 0.04597645, 0.02089928, 0.00464798, -0.04551340, 0.01567635, 0.06397754, -0.15073313, 0.08901744, 0.04190559, 0.05361916, 0.08923095, -0.03122053, -0.02844374, -0.08004369, -0.03423752, 0.05103655, 0.04697616, 0.01480328, 0.02648898, -0.05833978, 0.12081017, -0.02924524, -0.04368078, 0.03579180, -0.03882068, -0.00409756, 0.08637709, 0.06259443, 0.07790487, 0.11098467, -0.02453085, -0.00851057, 0.08394285, 0.10455251, 0.02985543, 0.02352727, 0.12351304, 0.00526244, 0.05495254, -0.07060049, -0.04052371, -0.00187027, 0.00280013, -0.03968607, -0.04086934, -0.04337683, -0.01587724, -0.10052382, -0.06634253, -0.09542137, -0.04140687, -0.03649126, 0.01406391, -0.03486702, -0.09507867, 0.00158540, -0.04161328, -0.04585331, -0.03321470, 0.00232084, -0.09904049, 0.10273500, -0.15257461, -0.01768932, 0.04774006, -0.04618254, -0.08555542, 0.04697413, -0.02656024, -0.02795397, -0.24044150, 0.05744085, 0.11215166, 0.02042138, -0.01658959, -0.14289974, -0.12352983, 0.09223702, -0.17006135, -0.06122336, -0.07529078, 0.06347191, -0.08248336, -0.10429025, -0.03615888, 0.02085790, -0.09497555, -0.08451560, -0.05459433, -0.05253589, -0.10643224, -0.13545091, 0.03468164, -0.02324078, 0.01153685, -0.08076996, 0.08029214, -0.08064058, -0.03337182, -0.07643427, 0.01357104, -0.14914761, -0.02619920, -0.01846219, 0.07923864, 0.01045086, 0.06549802, -0.13699174, 0.01850223, -0.31454021, 0.02273152, -0.05158529, 0.01017098, 0.02761647, 0.03651695, -0.15017490, -0.00340881, -0.15766497, 0.01660548, -0.02903674, 0.02625549, -0.00047074, -0.01359491, -0.05238251, -0.04549158, -0.06694618, 0.02516405, -0.05544567, 0.04986553, -0.00949757, 0.01507494, 0.01487554, -0.07644314, -0.08323036, 0.08859811, -0.07375296, 0.10552173, 0.00304857, -0.09632453, -0.02887571, 0.00747749, -0.12128396, -0.09457003, -0.04997845, -0.04480997, -0.03427618, -0.10074453, 0.02477030, -0.03916915, -0.09601266, -0.13200895, -0.06557951, 0.00259376, -0.04871755, 0.01569862, 0.00809036, -0.12400480, -0.12474503, 0.03239989, -0.09996936, -0.04160384, -0.10414659, -0.01653807, -0.04498314, -0.09856717, 0.02629708, -0.00771490, 0.02736191, -0.11760400, -0.06046825, -0.00293323, -0.01263301, -0.15021674, 0.04553849, 0.17123687, -0.08891243, -0.15498312, 0.00981712, -0.10404279, -0.03392663, -0.15549167, -0.03066967, 0.17333125, -0.12652305, -0.09683480, -0.08448143, -0.11809601, -0.12771307, -0.08134165, 0.00513042, 0.23979977, -0.08226233, -0.02406606, -0.10932068, -0.14345673, -0.08362193, -0.10452687, -0.09968439, 0.14593555, -0.00720174, 0.07404902, -0.07596802, -0.04418419, -0.18653694, -0.04763870, -0.26151183, 0.02642483, -0.06248821, 0.02721545, -0.00251275, -0.08425905, -0.16859303, -0.07630412, -0.31582063, -0.02509279, -0.03973437, -0.01272944, -0.02155338, -0.10255236, -0.21033983, -0.08684769, -0.18669708, -0.01886533, -0.01650234, 0.08024172, -0.06410257, 0.02221219, 0.09117986, 0.00479666, -0.05596542, -0.03663245, -0.10476757, -0.05608882, -0.00223126, -0.06629325, 0.03012280, -0.18243255, -0.01950758, 0.00816385, -0.11917036, -0.10296786, -0.06584232, -0.14209150, -0.00947718, -0.10704244, -0.11286883, -0.06571915, -0.00970714, -0.00750585, -0.08256082, -0.08450933, -0.05282118, -0.00649248, -0.05907926, -0.03681412, -0.10335436, -0.09423165, -0.04168873, -0.01385186, -0.00289785, -0.13648416, 0.06942830, 0.07694408, -0.06328192, -0.02708897, -0.01557380, -0.00247313, -0.02657641, -0.05308115, 0.04100890, 0.19649918, -0.13666727, -0.14670493, -0.06625643, -0.02216588, -0.06814011, -0.11462106, -0.12371337, 0.11258542, -0.02030885, -0.19730733, -0.09236153, -0.03446228, -0.04611121, -0.17495367, -0.01437009, 0.20954302, -0.08850658, -0.12785797, -0.07040428, -0.03931153, -0.04319604, -0.03115952, -0.14586310, 0.14182620, -0.04044234, -0.04568802, -0.11512063, 0.03977520, -0.04205203, 0.06022369, -0.29570350, 0.19183175, -0.03332645, 0.01085415, 0.00117585, 0.06687661, -0.04219216, 0.00262973, -0.17197189, 0.10226554, -0.00413135, 0.04294082, -0.05194750, -0.00477448, -0.02023582, 0.14618953, -0.14423341, 0.05999569, -0.03146476, 0.02286420, 0.05658962, 0.05924616, -0.08001370, 0.08679026, -0.06250363, 0.05869789, 0.03131130, -0.03299584, -0.01011356, 0.02779524, -0.02206776, 0.00734098, -0.03814541, -0.03380541, -0.06176637, -0.05830142, -0.04938228, -0.07960949, -0.10218093, 0.02118764, -0.05171860, -0.13526711, -0.11839755, -0.07605220, -0.01970452, -0.03905994, -0.00475899, -0.05085053, -0.03533934, -0.08397806, 0.00860627, -0.07181294, -0.13646100, -0.04658985, -0.03371028, -0.09167277, -0.07413005, -0.02363899, -0.05982746, -0.12351199, -0.11648779, -0.08090816, -0.05233247, -0.07834399, -0.19247320, 0.01423461, -0.05729591, 0.02553131, -0.11414354, 0.03863357, -0.07502082, -0.11673471, -0.23625849, 0.06507155, -0.08802168, -0.00852145, -0.09870157, -0.13379101, 0.03752251, -0.03206010, -0.33475167, 0.10820406, -0.04327297, 0.04702718, -0.04264583, -0.07573436, -0.01737038, -0.01973074, -0.40144596, 0.01100246, -0.07171241, 0.04358073, -0.00102457, -0.05589256, -0.04066973, -0.02778215, -0.42030868, 0.04074611, 0.02272786, 0.05929201, -0.02412664, -0.09715912, -0.05879395, 0.00522092, -0.17262459, -0.15124553, -0.09824958, 0.12341538, -0.04128207, -0.05248371, -0.14431149, 0.02592698, -0.17349187, -0.05529618, 0.00076534, 0.05470606, -0.05315773, -0.01316028, -0.02224902, 0.01660699, -0.10337315, -0.04430284, -0.13686350, 0.10643195, -0.05585735, 0.06554084, 0.17095996, -0.09968135, -0.13054076, -0.12033597, -0.02740220, -0.05346625, -0.04159518, -0.11879718
+    .float -0.09996334, -0.15950549, 0.10738368, 0.00871792, -0.02552467, 0.07725674, -0.09485914, -0.06074239, -0.13293870, -0.17423593, -0.04369379, 0.11707434, -0.21368082, 0.00364186, -0.13859230, -0.20588244, -0.04768712, -0.04972631, -0.03296150, 0.10812419, -0.22568510, -0.03569010, -0.15483485, -0.12607050, -0.13602160, -0.00977543, 0.07300683, 0.08698767, -0.11228790, -0.04210797, -0.05277259, -0.04247033, -0.01754211, -0.09855553, 0.07374012, -0.04987752, -0.11966970, -0.05046993, -0.03646021, -0.06970974, -0.10535468, 0.01136852, 0.08008875, -0.15493323, 0.05388388, -0.02796884, 0.04642053, -0.05423843, -0.01547670, -0.04592847, 0.10115182, -0.20427305, -0.03346458, 0.00509127, -0.03946678, -0.00765573, 0.14220460, -0.00528895, 0.14516732, -0.05664314, 0.11524490, 0.03353954, 0.03195133, 0.00838194, 0.03558525, 0.05679776, 0.13803919, 0.16152284, 0.16201678, -0.10947905, 0.03361782, 0.10174565, -0.01880286, 0.04512602, 0.08475710, 0.11780501, 0.08112285, 0.03060495, 0.03684337, -0.01833058, 0.06666327, 0.01461217, 0.05682209, 0.09544154, -0.00041904, 0.12303327, -0.04783965, 0.07506771, 0.08403053, -0.01018168, 0.06814548, 0.04644057, 0.07299986, -0.02190862, -0.02013821, 0.06496304, -0.20135924, -0.10541425, 0.00163591, 0.07788774, -0.10192324, -0.02000198, -0.08448901, -0.05323145, -0.19685902, -0.03674031, 0.00057054, 0.09724165, -0.06583636, -0.03408438, -0.05544429, -0.03447209, -0.12292587, 0.02110982, -0.06611626, 0.00403974, -0.15237431, -0.07073057, -0.08392273, -0.02095034, -0.04748623, -0.00847875, -0.02542921, -0.04371933, -0.08177324, -0.01577594, 0.06147468, -0.07308821, -0.08421967, 0.02985315, 0.02427386, -0.06461135, 0.04873840, 0.01883772, -0.04624748, 0.01280283, -0.03799313, 0.00352023, 0.03962074, -0.25594780, 0.00185191, -0.10321766, 0.02055138, 0.01822377, 0.05746047, -0.06264566, 0.17172368, -0.26486111, 0.07125525, -0.09487706, 0.00846389, 0.07759763, 0.02039573, 0.03615857, 0.17411941, -0.01831314, 0.09067600, -0.16151698, 0.08803660, 0.01255745, 0.06289332, -0.00675801, 0.09389623, -0.02521035, 0.04445756, -0.04559927, 0.01528778, 0.08322994, 0.03416261, 0.06113041, 0.10627352, 0.04577219, 0.09402243, 0.05627254, 0.04542556, 0.04134730, 0.08359564, 0.08263980, 0.09471315, -0.04981420, 0.06272559, 0.14788800, -0.01386494, -0.00297947, 0.00368078, 0.12507850, 0.09246635, -0.06514888, 0.02586643, 0.13670100, -0.05495558, 0.06670266, -0.26621708, -0.12968491, -0.01736616, 0.00696015, -0.11269481, -0.09750298, -0.09898101, -0.27066305, -0.16369286, -0.06889652, -0.13083377, 0.02256880, -0.10116269, -0.07817447, -0.18334597, -0.03009835, -0.16511784, -0.04103576, -0.00162543, 0.08630279, -0.06241865, -0.09888147, -0.02722764, -0.00377163, -0.09076440, -0.04871790, 0.04679535, 0.05891206, 0.06130128, 0.01709244, -0.06083696, -0.05074800, -0.07178693, 0.02920732, -0.04027706, 0.14195961, -0.02529121, 0.01444584, 0.02113032, -0.03424612, -0.11259673, -0.01982665, 0.15894915, -0.07080553, 0.03125562, -0.04160196, -0.02274184, 0.01413203, -0.07501283, -0.02056547, 0.14864722, -0.25071517, 0.08727522, -0.13403602, 0.00661221, -0.00423956, 0.09170193, 0.09982707, 0.22210649, -0.29791543, 0.01235512, -0.07491958, -0.03938631, 0.08404537, 0.11663422, 0.12559210, 0.38115627, -0.16984454, 0.10477556, 0.02829241, 0.03763433, 0.00967088, 0.13057967, 0.01228440, 0.38842243, -0.11295033, -0.02282654, 0.05845241, -0.02017989, 0.03680978, 0.20271505, 0.11493040, 0.32939684, -0.16323006, -0.00423385, 0.09268058, -0.09028884, -0.04028540, 0.13617595, 0.13693228, 0.21540697, -0.18301362, 0.02382921, 0.22305939, 0.00650894, 0.00483098, -0.29620388, -0.24910255, 0.04571568, 0.09411857, -0.15113175, -0.11545436, -0.12616304, -0.20804651, -0.10599691, -0.12175787, -0.02188780, 0.12093549, -0.03035240, -0.03665438, -0.05061187, -0.09780511, -0.13161543, -0.02551867, -0.15322398, 0.14010295, -0.09323343, 0.00399224, 0.04157347, 0.05661755, -0.10386987, 0.02475015, -0.14159377, 0.05482420, 0.02508916, -0.14348717, 0.02841144, 0.05865974, -0.07488321, 0.08833547, -0.05204430, 0.06812145, 0.09558003, 0.04658175, -0.02159556, 0.09392425, -0.09617941, -0.01761143, -0.01012253, 0.01416165, 0.08509003, 0.06603683, 0.04955163, 0.07892518, -0.19669123, -0.04161805, 0.14267202, -0.18292840, 0.08189791, 0.03555176, 0.00618616, 0.01349428, -0.28495353, 0.03070952, 0.11177518, -0.38480961, -0.06324796, 0.07940111, -0.04229574, -0.02585283, -0.19717738, 0.13444388, 0.38168165, -0.37108755, -0.05291262, 0.15860166, -0.05971157, -0.00093076, -0.05318424, 0.03582248, 0.28714198, -0.32487845, -0.07567119, 0.15826984, -0.15639415, -0.06930725, 0.09184807, 0.11021557, 0.37537691, -0.36635128, -0.05051400, 0.08818644, -0.01227335, -0.00085356, 0.24324560, 0.08507406, 0.31373590, -0.16863869, 0.00650378, 0.10753979, -0.00676718, 0.15197730, -0.25178167, -0.03914581, -0.03133093, 0.08809824, -0.12714289, -0.16700312, -0.11520982, -0.10101426, -0.12769483, -0.04337359, -0.08986139, 0.11438414, -0.00213222, -0.10674711, 0.02115342, 0.02250126, -0.15547222, 0.07563045, -0.11309242, 0.14756761, -0.07505313, -0.03842948, -0.02281016, 0.07925089, -0.06753773, 0.06456310, -0.18754447, 0.07878591, 0.00950854, -0.05821533, 0.09306821, 0.08274496, -0.12013821, 0.11496689, -0.08477563, 0.10793161, -0.04245670, 0.10956600, 0.03548517, 0.01486187, -0.04397013, 0.03054945, -0.00774604, 0.05555392, 0.07057945, 0.12317678, 0.01047722, -0.03430852, -0.19391784, -0.01156962, 0.06171700, -0.10630447, -0.02805560, 0.09907230, -0.01273682, -0.03616199, -0.30810374, 0.13869719, 0.03283542, -0.36412969, -0.10351445, 0.21986675, -0.11709167, -0.13884589, -0.34537575, 0.02177219, 0.05065023, -0.44307062, -0.22831027, 0.23639992, -0.18346114, -0.15991762, -0.15551805, -0.10379981, 0.01390443, -0.38327363, -0.17009415, 0.23425083, -0.16360170, -0.17065190, -0.02664570, -0.01240774, 0.20024528, -0.44866449, -0.08751832, 0.14588465, -0.22307190, -0.10649801, 0.28054258, 0.02462500, 0.21190231, -0.22818145, -0.07142595, 0.25468951, -0.14341156, 0.05834616, 0.02434989, -0.05446652, -0.02589216, 0.03597828, -0.05680613, 0.02639244, -0.02900498, -0.07970702, 0.03348586, 0.06492051, -0.02787586, -0.01256876, -0.00365976, 0.01567344, -0.07255868, -0.05447533, -0.06857132, -0.01368186, -0.14286439, -0.08166064, 0.05614617, -0.02394431, -0.01714657, -0.01727344, -0.12760597, 0.04165883, -0.19473644, -0.15662402, 0.06518114, 0.03036425, 0.09382176, 0.06269024, -0.00320127, 0.09295306, -0.04047010, -0.04244730, -0.00183668, 0.12373679, 0.05207139, 0.01425815, -0.02611220, 0.11799141, -0.06390434, -0.00677817, 0.06685098, 0.10150719, 0.11230569, 0.01436098, -0.20455168, 0.09910905, -0.04021849, -0.08462317, -0.03857505, 0.20611686, 0.10478017, -0.02466647, -0.21871291, 0.14409941, -0.06038973, -0.20710520, -0.13882798, 0.21144442, -0.04234340, -0.14573486, -0.22482099, 0.03896618, -0.16655491, -0.18683764, -0.09391931, 0.35685396, -0.12179122, -0.06269688, -0.27628630, -0.00962259, -0.23237787, -0.23998848, -0.21362022, 0.16778821, -0.13072509, -0.17766352, -0.13356893, -0.07792474, -0.01084841, -0.22999537, -0.05622630, 0.05225345, -0.07076572, -0.16400649, 0.10197481, -0.11524030, 0.07694684, -0.15737551, -0.04694062, 0.17162125, -0.10997907, -0.02618606, -0.08070285, -0.09045144, 0.08860257, 0.06486222, -0.06145823, -0.04391393, -0.00164261, 0.00979862, 0.02642982, 0.01910494, 0.05801413, 0.01766690, 0.00924738, 0.04232022, 0.00382131, -0.08019213, -0.02261287, 0.07625667, -0.04011571, -0.12944789, -0.02803060, 0.08204602, -0.06231698, 0.02039093, -0.11223556, 0.08723114, -0.18660828, -0.29972962, 0.07197144, 0.15573704, 0.06273320, -0.00274530, -0.06950837, 0.06412225, -0.23123971, -0.11541858, 0.00479969, 0.12959619, 0.02049053, 0.00741145, -0.18924083, 0.03908264, -0.09483840, -0.14644316, -0.00815586, 0.07439326, 0.01967420, 0.02959423, -0.21132912, 0.02151625, -0.10087643, 0.07249716, -0.12427454, 0.13730077, -0.04774372, -0.10476157, -0.20002715, 0.09257068, -0.19292004, -0.04179617, -0.08298136, 0.21794058, -0.06428471, -0.06919162, -0.12201155, -0.01233591, -0.34420183, -0.04459435, -0.05870063, 0.19287337, -0.03046320, -0.06414140, -0.15416293, -0.06433143, -0.28034627, 0.00240741, -0.04165689, 0.05030539, 0.02644555, -0.06285277, -0.13496876, 0.01107512, -0.06366519, -0.00755458, -0.00549870, 0.03833438, -0.05587784, -0.10117786, -0.10547419, -0.11468658, 0.08070655, -0.06750274, -0.01703486, -0.09413204, -0.08459035, -0.05809097, -0.07746191, -0.02326845, 0.14222090, 0.10736150, -0.06716484, -0.02350340, 0.03707821, 0.01445091, 0.01644661, 0.15285617, 0.11995893, -0.01779992, -0.04128368, 0.07325865, 0.09443811, 0.05460362, -0.02878897, 0.05542062, 0.13833590, -0.19605902, -0.05834590, 0.06563487, -0.03538847, -0.07017971, -0.06078745, 0.08438154, 0.00566331, -0.24914546, -0.05983904, 0.23161513, -0.04803776, 0.06702428, -0.07920375, -0.02194558, -0.04161554, -0.27495351, 0.00578183, 0.19836111, -0.01154443, 0.05194144, -0.12061786, 0.05051027, 0.03808586, -0.02390123, -0.12438647, 0.02547066, -0.11894076, 0.00433996, -0.05032306, 0.03656241, 0.06704491, 0.00035723, -0.06998519, 0.10131060, -0.05525630, 0.00763567, -0.05981041, 0.02235993, -0.00217887, 0.04680779, -0.04545145, 0.07329269, -0.08503092, 0.00166266, -0.08726810, 0.00628097, -0.10378134, 0.08149464, 0.02302754, 0.07516026, 0.02846040, -0.05328861, -0.17454858, 0.05553761, -0.10612296, 0.00232789, 0.03571998, 0.00320835, 0.00292667, 0.06005520, -0.15327086, 0.00096416, -0.07625340, 0.12230130, -0.01842317, 0.04783191, -0.01622804, 0.08532252, -0.09701634, -0.00562152, -0.02630711, 0.07010955, 0.02623777, 0.01683958, -0.03562707, -0.03809417, 0.14321685, 0.05968920, 0.09189092, 0.06830072, 0.02442749, 0.05670993, -0.04698423, -0.03708862, 0.10025647, 0.11280017, 0.11591326, 0.00344537, 0.04075965, 0.07008824, 0.03424640, 0.01902788, -0.01943235, 0.08874255, 0.15399912, -0.11186001, 0.00685410, 0.08151965, 0.08784404, 0.02294212, 0.08290448, 0.06593476, 0.26516530, -0.24997632, 0.01196235, 0.20868722, -0.04466398, -0.00402906, -0.01835580, 0.12155100, 0.11725644, -0.22090515, -0.08395039, 0.06275400, 0.01662953, -0.10802034, 0.03040768, -0.05356045, 0.06818503, -0.08161180, 0.03974584, 0.10020884, -0.11218350, -0.02463205, 0.09944405, -0.08196442, 0.10294858, -0.00713213, -0.01696260, 0.03808195, -0.04141790, 0.00105495, 0.02737927, 0.03099382, 0.14750251, 0.07071241, 0.01271815, 0.08100701, -0.01991155, 0.01760808, -0.04487325, -0.06708390, 0.04531270, 0.05912574, 0.03667667, -0.03519351, -0.02036950, 0.07658902, 0.01343951, 0.03373028, 0.02790898, 0.12113706, 0.05275911, 0.00472387, 0.09653345, -0.02946829, -0.11440096, 0.00973101, 0.05727591, -0.00372329, -0.00395053, 0.00477689, 0.10801028, 0.03744755, -0.14123529, 0.01343025, 0.00286359, 0.02078618, 0.02640835, -0.10742968, 0.05221231, 0.02990154, 0.01342692, -0.05761805, 0.10362037, 0.13646075, -0.02691096, 0.08489270, -0.03908234, 0.01680953, 0.04169681, 0.04641216, 0.08775650, -0.01503384, 0.02165713, 0.07961953, -0.06639742, -0.02106255, -0.00447958, 0.12405799, 0.21067537, -0.02393221, 0.08054429, 0.12533101, 0.03052943, 0.02001836, -0.08467418, 0.00806525, 0.26660097, -0.23905122, 0.02333147, 0.11990667, 0.09299223, -0.02960572, -0.03581423, 0.02551666, 0.25588509, -0.22328110, 0.08463773, 0.18244553, -0.01829445, -0.07243858, 0.02361432, 0.01057759, 0.19579490, -0.13534680, 0.09308909, 0.09667697, 0.00607945, -0.04589505, 0.01247167, 0.03418751, 0.12978727, -0.04231013, 0.00664967, -0.15865791, 0.03477260, 0.01027583, 0.11027089, -0.00838477, 0.08162789, 0.03762947, 0.01276533, -0.12222876, -0.03749976, 0.09898804, 0.01701453, -0.05033746, 0.03368049, 0.08241905, 0.10189506, -0.14306585, 0.04026584, 0.00595911, -0.00666318, 0.03135234, 0.04845400, -0.04335104, 0.04175226, -0.06171171, 0.10137080, 0.00538375, 0.01759630, 0.08149437, 0.10386187, 0.01897917, 0.04595914, -0.03681704, 0.04797999, 0.10199566, -0.01494542, 0.13213590, 0.07993372, 0.08588743, 0.12642545, -0.04003263, 0.11382002, 0.04130075, -0.08557484, -0.05022176, 0.07905826, 0.01475256, -0.08070876, -0.04257827, -0.02674932, -0.01708536, 0.01507512, -0.04256959, 0.06633743, 0.10772010, 0.02128934, -0.04228714, 0.00486967, -0.08192850, -0.04866385, 0.02560246, 0.16652901, 0.01239737, -0.03868494, -0.01681843, -0.02617114, -0.00218469, -0.02694173, 0.00739051, 0.24769431, -0.13579360, 0.09437313, 0.08386586, 0.01403758, 0.05342797, -0.00173945, 0.02276267, 0.24078237, -0.13981089, 0.04258182, 0.08059577, 0.09010833, -0.00022760, 0.00010817, -0.03186079, 0.24415028, -0.17138650, -0.00708459, -0.07157342, -0.00951060, -0.03131609, 0.07828337, -0.05037063, 0.20216608, -0.00792419, 0.01674892, -0.08464109, -0.00317479, -0.01113140, 0.01189653, 0.02784963, 0.06344324, -0.00375623, 0.10141163, -0.10069741, 0.06097180, 0.02210424, 0.06403690, -0.04738471, 0.07357410, -0.01169535, 0.01719064, -0.17582875, -0.02778922, -0.01561840, 0.06481659, -0.03473690, 0.24628247, 0.01280651, 0.00072030, -0.05850372, 0.02770562, 0.00948928, 0.14152731, -0.02945350, 0.11876714, -0.01553210, -0.03090164, 0.01741759, 0.02548676, 0.00803958, 0.12674341, 0.08770218, 0.10092903, 0.16653043, 0.04307648, 0.05297402, 0.14882194, 0.03245310, 0.08079511, -0.07642838, 0.01243408, 0.04481194, 0.02679387, 0.02645015, 0.01879817, -0.07565699, -0.03698091, -0.07884298, -0.02481815, 0.12647198, -0.11098626, 0.01720981, -0.06832145, -0.07677837, -0.07871960, 0.01663783, 0.08396139, 0.02812928, 0.02064915, -0.02262068, -0.09094704, 0.02631618, -0.08844335, 0.01816588, 0.08046541, -0.12307904, 0.02341716, -0.01640539, -0.02386260, -0.02857707, -0.01526381, 0.13831612, 0.26252928, -0.15323016, -0.01025706, 0.03846603, 0.07130742, 0.02223295, -0.07715549, -0.00866395, 0.28177291, -0.15750302, 0.01909994, 0.03600420, 0.02638853, 0.01036225, 0.11398090, 0.11497068, 0.36903241, -0.00852918, 0.08239851, -0.04451347, 0.05330950, -0.00439973, 0.20894340, 0.05279859, 0.34494978, -0.00876743, 0.05146833, -0.05019092, 0.02570513, 0.01945251, 0.18512219, -0.02211074, 0.21759832, -0.02714960, 0.00996702, -0.05460990, 0.09465240, 0.05409074, 0.13357756, -0.02898744, 0.14652997, 0.07163737, -0.05216889, -0.01359009, -0.00131855, 0.05746114, 0.18828350, 0.05162278, 0.08945771, 0.08946718, 0.03667324, 0.01433767, -0.00390752, 0.07192694, -0.07767697, 0.08588043, 0.10065221, 0.11015548, 0.04611788, 0.01725823, 0.11863018, 0.02716234
+    .float 0.04316487, 0.05875150, -0.03536503, -0.10397357, 0.03793583, 0.00455914, 0.02607181, 0.11445593, 0.08824980, 0.10522413, -0.07208706, -0.09087998, 0.14147896, -0.00618873, -0.01546041, 0.14664923, 0.05530990, 0.08551922, -0.03659143, 0.06499965, 0.07517961, -0.00612743, -0.01116058, 0.06507752, 0.13942511, 0.14103845, -0.09395157, 0.05337703, 0.10305852, -0.03696490, 0.01343768, 0.00355765, 0.02579880, 0.05746264, -0.05582599, 0.22782463, 0.11538828, -0.05104564, -0.02063327, -0.02170088, 0.11343354, 0.06949565, -0.01358430, 0.22281781, 0.12879920, -0.01326629, 0.01298967, 0.10764575, 0.09513552, 0.07918409, 0.07967214, 0.25882727, 0.03540861, -0.01588832, 0.02604732, 0.05075727, 0.00282906, 0.08379716, 0.08282972, 0.17413718, 0.09381461, 0.02262731, 0.13593787, 0.06585757, 0.05949361, 0.06434366, 0.09633682, 0.17091288, 0.11711219, 0.01347096, 0.03505280, 0.04613328, 0.16164388, 0.09045062, 0.01096108, 0.12427498, 0.08704369, 0.06763946, 0.08689728, 0.12096331, 0.07218013, 0.03893721, 0.00153963, 0.11500929, 0.13749391, -0.00481467, 0.00390632, 0.09504596, 0.12942983, 0.02241706, -0.01635165, 0.10861611, 0.09790523, -0.11181582, 0.06734940, 0.11098193, 0.09273353, 0.01212136, -0.04030962, -0.06882731, -0.05707745, 0.06840035, -0.08868501, 0.00269584, 0.02093097, 0.03698843, -0.10835743, 0.01533677, 0.00182611, -0.02890404, -0.06825285, -0.05508691, -0.01084282, -0.03635710, -0.03805473, 0.15141016, 0.06806502, -0.00123279, 0.01121459, 0.00700960, -0.05377163, -0.14998703, -0.12085923, 0.14593641, -0.06704098, -0.05333821, 0.05372057, 0.03609069, -0.07461490, -0.10195991, -0.01185101, 0.15316413, 0.01398740, -0.05418336, -0.01808653, 0.00567455, -0.00849668, -0.07666455, 0.07648872, 0.21916477, -0.01120752, -0.14784141, 0.06696969, -0.00240482, 0.08352101, -0.01128740, 0.07365248, 0.12871501, -0.00056066, -0.20659496, 0.04668423, -0.02300028, 0.13813096, -0.02951138, 0.13897534, 0.08597898, 0.11782329, -0.21813093, 0.01344555, 0.05504306, 0.11106168, -0.01220000, 0.02390814, -0.04227398, 0.01825571, -0.21493661, 0.06216844, 0.12146349, 0.10742470, 0.10472713, 0.05875973, -0.01546176, 0.05166249, -0.12894797, 0.08193330, 0.07390799, 0.06214488, 0.15465580, -0.05264413, -0.09457478, 0.09377152, -0.05741203, 0.05206114, 0.17917602, -0.05859784, 0.07192480, 0.03972670, -0.00826890, 0.00746528, -0.14366128, 0.09360003, 0.11555694, -0.06463912, -0.12469146, -0.10032783, -0.12683122, -0.06465241, -0.01414563, -0.11739873, -0.09106900, -0.09399358, -0.13007449, -0.04577811, -0.07556643, 0.02802597, -0.01197169, -0.10278121, -0.12369527, -0.01140374, -0.10883869, -0.14095722, 0.19868931, -0.01743250, -0.09042262, -0.07616785, 0.01972394, -0.08504299, -0.09250783, -0.03592223, 0.27724588, -0.08910769, -0.04938448, 0.00161408, -0.12280396, -0.00617821, -0.09088782, -0.01937443, 0.16388577, -0.03222055, -0.24893226, -0.00429549, -0.06559161, 0.04123358, -0.21673347, 0.16516696, 0.20232552, -0.07660093, -0.26792061, -0.02356581, -0.10076803, 0.12740333, -0.09687333, 0.17226760, 0.01638827, 0.04358030, -0.17769817, -0.05065406, 0.01757837, -0.00993502, -0.04697178, 0.08749843, -0.08542710, 0.05991479, -0.21803324, -0.02519668, -0.01761185, 0.00400090, 0.00755944, 0.07981433, -0.18869491, -0.07229587, -0.11121868, 0.02596061, 0.04899173, -0.03461911, -0.02222253, -0.07094952, -0.12940103, 0.01573722, -0.00272811, -0.09919741, 0.00540776, 0.00853763, -0.01662638, -0.15222487, -0.10896904, -0.06064346, 0.01647807, -0.00769467, -0.07090711, -0.12887420, 0.09358958, -0.20993486, -0.04531888, -0.01099646, 0.00931546, -0.05874667, -0.04869769, -0.17969267, -0.14483832, -0.12206063, -0.06520404, 0.00440836, 0.04327853, -0.15866390, -0.09082232, -0.12791036, 0.00142093, -0.13757674, 0.03131402, -0.08974312, -0.07684258, 0.01989670, -0.01414797, -0.07044695, -0.01150636, -0.00155244, 0.24616349, -0.14169371, -0.07991195, -0.13754006, -0.10872174, -0.00210943, -0.11800874, 0.06802738, 0.21134511, -0.11582547, -0.04617837, -0.02684101, -0.02787744, -0.02868551, -0.08621110, 0.00580189, 0.22975148, 0.00122255, -0.12524800, 0.02980416, 0.02335646, 0.04791825, -0.21070167, 0.12333048, 0.09278940, -0.04309402, -0.18225645, -0.02737182, 0.04181282, 0.13970688, -0.20734754, 0.17635451, 0.08377408, -0.09157076, -0.24368632, 0.00559228, 0.02031706, 0.04366431, -0.05163312, 0.28776258, -0.03571802, 0.01859773, -0.17970760, 0.01043962, -0.11762207, 0.01913098, 0.02372531, 0.12806615, -0.24644452, -0.07828432, -0.04281756, -0.14737290, -0.12633592, 0.00404073, -0.05131568, 0.03923555, -0.19555114, -0.09543467, 0.05361536, -0.04655696, -0.15224665, -0.08333843, -0.02122594, -0.02614349, -0.15631557, -0.17902997, 0.08427209, -0.18386993, -0.11338600, -0.18794100, -0.08062939, -0.22995748, -0.13155006, -0.23418051, 0.09990408, -0.22609773, -0.16243725, -0.20095211, -0.17337452, -0.07635916, -0.08893818, -0.12519762, -0.05454107, -0.13130896, -0.15797351, -0.06690273, -0.06346512, 0.00011719, 0.10865082, -0.09488824, -0.04067252, -0.07397422, -0.11720316, -0.11271261, -0.08708841, 0.04599120, 0.22489397, -0.11273316, 0.03541164, -0.06260397, 0.00195198, -0.02185393, -0.11954229, 0.03397364, 0.19938469, 0.03164701, -0.04932706, -0.02474198, -0.01614490, -0.04499713, -0.04609783, 0.06779755, 0.04234686, 0.00565158, -0.22636168, -0.02324061, 0.00178446, 0.01675143, -0.11328495, 0.10207745, 0.08059754, -0.04200010, -0.28066835, 0.07729565, 0.01688991, 0.14401902, -0.14338617, 0.18855059, 0.07939889, -0.02771660, -0.44079337, 0.04582734, -0.04617035, 0.02422200, -0.07049833, 0.09757050, -0.18349735, -0.15208738, -0.23745340, -0.06613418, -0.17354311, -0.04762205, -0.08077955, 0.11366794, -0.36425051, -0.12293716, -0.09662957, -0.11085418, -0.10479774, -0.04210201, -0.02603350, -0.03357914, -0.25894022, -0.11943468, 0.10491437, -0.12028028, -0.12467034, 0.01666437, -0.07336850, -0.00675579, -0.11950406, -0.14705652, 0.07089679, -0.19929601, -0.06356533, 0.06427437, -0.23683940, -0.11560455, -0.06597450, -0.13418022, -0.17717281, -0.10637335, -0.20008367, -0.14697875, -0.09525340, -0.01944992, 0.00726902, -0.11494817, -0.11246969, -0.04381335, -0.02888853, -0.08094756, 0.03416187, -0.11313401, -0.07503008, -0.04887295, -0.08101816, -0.09268928, 0.02776386, -0.00129443, -0.01184824, 0.00399517, 0.32274115, 0.00463460, -0.08490004, -0.05862391, -0.02368805, -0.07155284, 0.03570358, 0.07502367, 0.22730400, -0.01093814, -0.11999159, -0.02249702, 0.00797441, 0.03897746, -0.06000443, -0.02552013, 0.07573619, 0.09090425, -0.07443824, 0.08300429, 0.00460651, 0.06429556, -0.14336760, 0.01037347, 0.02621370, 0.02835968, -0.29163671, 0.02793504, -0.00730833, 0.13636421, 0.06376807, 0.16038056, 0.02674226, -0.00869853, -0.25661445, 0.01622812, -0.07546242, 0.05641121, 0.06711426, 0.09868556, -0.28608233, -0.06507802, -0.11214487, 0.03648296, -0.13262700, -0.11481577, 0.08089834, -0.08476730, -0.26930469, -0.07050562, -0.05795500, -0.09196652, -0.09665472, -0.11685173, -0.05190936, -0.10247654, -0.21137226, -0.00486663, 0.06973599, -0.03743733, -0.03089439, 0.01203144, -0.03956765, -0.15348214, -0.13606919, 0.04117662, 0.09890608, -0.02237389, 0.03859608, -0.01006082, 0.02215626, -0.19116744, 0.06208207, -0.03586892, -0.27915454, 0.00302102, -0.03078052, -0.19485919, -0.12926379, -0.04178442, -0.10758793, -0.00181804, -0.12051463, -0.04451355, -0.13378000, -0.02835841, -0.01399312, -0.11811666, -0.02957560, -0.00911115, -0.10655063, -0.01284941, -0.03784673, -0.03768001, -0.07799751, -0.04017595, 0.27280819, -0.00176302, 0.01884820, 0.03950772, -0.02516196, 0.03672651, 0.01219383, -0.05232468, 0.14065880, -0.00106615, -0.01335482, 0.08222711, 0.02164021, -0.01210562, -0.07439235, -0.04597874, 0.02911845, 0.01099473, -0.02783752, 0.05736418, 0.03750866, 0.09269669, 0.04963424, 0.01305266, 0.19096316, 0.04862830, -0.22612861, 0.11925301, 0.02441665, 0.06200897, 0.08734951, 0.14613311, -0.02108299, 0.11869606, -0.04661981, 0.04345708, -0.00912691, -0.00196371, -0.00126007, -0.07096311, -0.14068820, -0.04031111, -0.02252297, 0.10692120, 0.07109410, -0.00942555, 0.04707509, -0.09572136, -0.07638252, -0.02305360, 0.08690568, -0.01851600, -0.02060246, 0.04224793, 0.02226698, -0.17548336, -0.01688914, -0.01447490, 0.04632995, 0.03084703, -0.00979320, -0.03419343, 0.05397822, -0.27656844, 0.04593717, 0.08506361, 0.04602924, -0.02673854, 0.11033859, -0.13659598, 0.02765748, -0.29679039, 0.11673632, 0.09567474, -0.05779013, 0.07789389, 0.11857080, -0.19101018, -0.15873043, -0.11183239, -0.05286344, -0.03393769, -0.15168428, -0.16357696, -0.18670073, 0.00807474, -0.01413346, -0.12356998, -0.14125015, -0.02214867, -0.07346999, 0.04103527, 0.03869906, -0.12722863, -0.03791755, -0.22805519, 0.13999613, 0.08715042, -0.10738984, 0.03488444, -0.03953222, 0.02339823, 0.01670953, -0.21357530, 0.22300138, 0.07646023, 0.02995498, 0.01002654, 0.09667836, 0.03269072, 0.02291628, -0.08961715, 0.14090934, 0.10797369, -0.03283043, -0.00496244, 0.09009896, -0.05615174, 0.00235858, -0.21304336, 0.05843802, 0.09741760, -0.18428577, 0.08508272, 0.00678232, 0.00233286, -0.04620206, -0.14778405, -0.10139019, -0.00684727, -0.10722020, 0.14813553, -0.02935442, 0.03538782, -0.00641095, -0.16874926, -0.09167303, 0.09280352, 0.03293786, -0.02186539, 0.00451849, 0.14266966, 0.07526834, -0.17278774, 0.09097002, 0.03404675, -0.04687470, -0.04257812, 0.07090539, 0.05836873, -0.01449136, -0.17762420, 0.07125392, 0.04389038, 0.01856566, 0.10980613, 0.03960661, -0.03617614, -0.03604776, -0.24122693, 0.02894899, 0.03454135, -0.00296204, 0.03105310, 0.01747453, -0.12152164, 0.05903807, -0.11749166, 0.08247446, 0.01796651, -0.05098521, 0.09500399, -0.01573586, -0.10515010, -0.15008026, -0.08521335, -0.11166972, -0.12155190, -0.12395394, -0.10438266, -0.17951351, -0.05012396, -0.10275880, -0.12447133, -0.12552808, -0.07526605, -0.03645326, -0.05376154, -0.01200164, -0.09030557, -0.06110134, -0.32189590, 0.12713243, 0.05891721, 0.00128612, 0.05487735, 0.07869860, -0.02184485, -0.01869705, -0.30945551, 0.12620085, 0.04664816, -0.01732538, 0.09538033, 0.10211588, 0.00374969, 0.05137986, -0.33658341, 0.13809119, 0.11315506, 0.01598690, 0.00596046, 0.08451725, -0.03034129, 0.04630724, -0.17272016, 0.06367461, 0.08017037, -0.09107185, 0.06380779, 0.13080084, 0.12053070, 0.09236996, -0.25161803, -0.06338809, 0.12075190, -0.07125573, 0.05546528, 0.06095507, 0.11979002, 0.02805327, -0.10856964, -0.04701584, 0.14054370, -0.08256784, 0.01756483, 0.02089642, 0.00966143, 0.03605738, -0.06858744, -0.02669857, 0.01448457, -0.00195801, 0.11860398, 0.04113454, 0.01463002, 0.02976352, -0.17848256, -0.03824544, 0.06008692, -0.03106853, 0.09683148, 0.06085424, 0.06767093, -0.04039520, -0.02716460, -0.06391584, 0.06361143, -0.10859156, 0.02608280, -0.06070835, -0.03685714, 0.00003046, 0.01621935, 0.06891151, 0.02731502, 0.01716227, 0.01066347, -0.07982523, -0.16818072, -0.14498644, -0.12305319, -0.09862352, -0.00537776, 0.00163463, -0.09674757, -0.08459363, -0.00366738, -0.12145804, -0.17491271, -0.08932804, -0.05623205, -0.10736237, -0.16120118, -0.03400259, -0.09207033, -0.03377567, -0.23282154, -0.06948993, -0.01637359, -0.06612148, -0.07592888, -0.00671639, -0.00756094, 0.01068465, -0.39381954, -0.12254362, 0.03893645, 0.07639226, 0.04890176, 0.14964874, 0.08058153, 0.14289181, -0.42391720, -0.00358579, 0.09817056, 0.09287113, 0.13373841, 0.07507403, -0.09857297, 0.17616004, -0.20889243, -0.08229767, 0.10520223, 0.08928774, 0.11466144, 0.07670685, -0.03283411, 0.04740873, -0.05150877, -0.09262543, 0.11510560, -0.01709015, 0.12834570, 0.03332093, -0.02374775, 0.07075468, 0.03727282, -0.03397032, 0.07401087, -0.10372727, 0.13519335, 0.08690313, 0.03308501, -0.03524929, -0.02350930, -0.12001115, -0.04505353, -0.03716556, 0.06672272, -0.02803125, 0.16206124, -0.06543969, -0.05795795, -0.02263122, -0.01975044, -0.10492805, 0.03104539, -0.06390681, 0.01566099, 0.00935917, -0.05415758, -0.02158128, 0.01419804, -0.13226853, -0.01786109, -0.09517789, -0.07180811, -0.06969912, -0.06166011, 0.00261009, 0.00510828, -0.08778043, -0.03745636, -0.03062822, -0.12928963, -0.07936180, -0.06064110, 0.00781917, -0.07528836, -0.00110657, -0.09449505, -0.02336292, -0.08390667, -0.12323441, -0.07623713, 0.00194644, -0.05327887, -0.06694023, -0.10292552, -0.04557813, 0.05370430, -0.05686785, -0.24015521, -0.15163840, 0.00919281, -0.03547941, -0.15450934, -0.04895111, 0.05750235, -0.02736169, -0.31233239, -0.22640805, -0.02908101, 0.02931738, -0.01713679, 0.02363403, -0.06459994, 0.09289058, -0.43827406, -0.12228148, 0.08617567, 0.13699563, 0.03445034, -0.00316061, -0.13608056, 0.07049191, -0.46080124, -0.19701575, 0.09531388, 0.25393060, 0.05824566, 0.06704069, -0.23194425, 0.01824219, -0.24054250, -0.16473816, -0.00658231, 0.07361315, 0.01340449, 0.00675265, 0.07313969, 0.03856115, 0.02386046, -0.06653040, -0.07841006, 0.04500201, 0.02896711, -0.03761757, 0.14913179, -0.00498283, -0.04974588, -0.01101797, -0.08476333, 0.05567143, -0.00249054, -0.04591727, -0.00845422, -0.09224266, 0.00170369, 0.00488548, -0.05140301, 0.02161794, 0.01490873, -0.11356308, -0.00689181, -0.07109334, 0.03009314, -0.00968231, -0.14693716, -0.06251422, -0.10625425, -0.13284878, -0.03701016, -0.15505673, 0.01111127, -0.07345389, -0.11859024, -0.11878498, -0.13364026, -0.08357829, -0.11519669, -0.00473926, -0.06959267, -0.03295193, -0.13782632, 0.00668523, -0.11451856, -0.09013318, -0.41616544, -0.17693104, -0.03990198, 0.05430760, -0.15278850, -0.16943838, -0.08425166, -0.14050563, -0.03842005, -0.09714441, -0.09148587, -0.01827895, -0.05214426, -0.19876069, -0.10362060, -0.04496423, -0.02908093, -0.16347583, -0.09815098, -0.09481382, 0.01367602, -0.05267588, -0.10505581, 0.00486718, -0.07916924, -0.07056817, -0.03452529, 0.01434431, 0.01428114, -0.05806575, -0.06047824, -0.06991033, -0.24602635, -0.03245040, 0.05796151, -0.11445716, 0.00785373, 0.04839411, 0.02929555, -0.11434197, -0.29804668, -0.07159585, 0.09592033, -0.15908366, -0.03051640, -0.07231464, -0.09618745, 0.00290814, -0.33612633, -0.10228177, -0.04784459, -0.19238523, -0.06720344, -0.04854276, -0.09272379, -0.05604706, -0.24039751, -0.12397242, 0.08623037, -0.09340786, -0.04949160, 0.01697250, 0.00288408, -0.03127089, -0.20948032, -0.13801716, 0.01377951, -0.01255491, -0.09499776, -0.07723432, -0.04877359, -0.03180711, -0.08516908, -0.09464943, 0.01401060, -0.03860110, -0.19038928, 0.00351412, -0.01413910, -0.17936626, -0.00823947, -0.14177649, -0.03575860, -0.11308050, -0.28135514, -0.12252104, -0.22564536, -0.30481797
+    .float -0.01251051, 0.05059915, -0.03667144, -0.04137616, -0.08902609, 0.09971064, -0.06384879, -0.05495465, -0.06279175, -0.05830862, -0.03680178, 0.02919980, -0.13467199, -0.03067685, -0.12337525, -0.10736391, -0.09528451, 0.01601442, 0.07272428, -0.02877364, -0.22438206, -0.02042847, 0.00104624, -0.06229634, -0.17803739, -0.22958495, -0.05809258, -0.06506000, -0.18986587, -0.08595746, -0.12191949, -0.14874285, -0.17644759, -0.12310803, -0.04009974, -0.05669131, -0.10140885, -0.04369829, 0.00913084, -0.06165965, -0.09824280, -0.23374180, 0.01763392, -0.15266046, -0.17117403, -0.14597525, -0.03887993, -0.09170431, -0.05484284, -0.29332075, -0.03675705, -0.06047293, -0.13185047, -0.14008804, -0.11194169, -0.14768860, -0.07476774, -0.30256248, -0.09486642, -0.11498870, -0.00572254, -0.13738085, -0.04490856, -0.14020079, -0.17866366, -0.18834542, -0.29025313, -0.08222382, -0.02231234, -0.04340437, -0.06440563, -0.20891292, -0.22928774, -0.13096450, -0.22629400, -0.14266160, -0.21847798, 0.00699568, -0.10558128, -0.21519935, -0.27372748, -0.06278034, -0.07002497, -0.18598436, -0.18297049, 0.04075284, -0.20945616, -0.18777351, -0.29968217, -0.07190653, 0.04191419, -0.05132999, -0.23714727, 0.08046881, -0.18306410, -0.21786235, -0.02899249, 0.06614294, 0.06397302, -0.02889513, 0.00603672, 0.06407532, 0.10801935, 0.08640647, -0.01178978, 0.04852015, 0.00375682, 0.01507318, 0.02581654, 0.10230635, 0.15736920, 0.00499731, 0.04823075, 0.06958812, 0.12002110, 0.08742427, 0.06156739, 0.10068920, 0.01830924, 0.00079236, 0.03607983, 0.06803547, 0.12182207, 0.06639211, -0.04130117, 0.05935351, -0.01626669, 0.02333403, 0.02129894, 0.03750734, -0.00671145, -0.20079276, -0.03586032, 0.01900313, -0.05907592, -0.01817950, -0.01383780, -0.07778529, -0.01109918, -0.22203758, 0.00426386, -0.06869262, 0.02012707, -0.03575786, -0.09145920, -0.03343859, 0.00363826, -0.27637929, -0.02066861, -0.24646997, -0.03013354, -0.01245201, -0.04133093, -0.17021029, -0.01292809, -0.10063580, -0.11115667, -0.17259263, -0.05523392, -0.06102036, -0.07500979, -0.16941315, 0.05930749, -0.00802303, -0.11616269, -0.00227357, 0.01314361, -0.15060085, -0.03856030, -0.21938595, 0.02674507, -0.08138466, -0.03362481, 0.14692633, -0.10870965, -0.01095408, -0.07954896, -0.31490052, -0.01149761, 0.02497479, -0.09442085, 0.03968073, -0.11195221, -0.10215677, -0.08947328, -0.20326693, -0.01811787, -0.02232585, -0.05212390, 0.07680460, -0.15218230, -0.10412128, 0.13666761, 0.09482617, 0.02478326, 0.00813009, 0.05772425, 0.05934471, 0.11673413, 0.03153822, -0.02125165, 0.13399841, -0.01038379, 0.08981299, -0.00568258, 0.14990851, 0.15683056, 0.06672360, -0.06476944, 0.11230920, 0.07035534, -0.03107976, 0.00043706, 0.23954254, 0.16059349, 0.07243122, 0.01183911, 0.18887374, 0.00975482, 0.07432728, 0.03596695, 0.20975284, 0.03545080, 0.13339779, 0.00507056, 0.04162097, 0.04016237, -0.12212530, 0.04186263, 0.30948603, 0.03174946, 0.00093754, -0.03151282, 0.06404566, 0.02355506, -0.25580189, -0.07683085, 0.11945239, 0.04376519, -0.11112700, -0.01549223, 0.03482588, -0.00482129, -0.24849476, -0.03313329, -0.00511954, 0.00254894, -0.09603318, -0.04978038, -0.03029756, 0.12133362, -0.02172998, -0.01138172, -0.06196025, -0.10681967, -0.01702693, 0.10614403, 0.02252835, 0.12389362, 0.09494298, 0.01734967, -0.15509440, -0.05153298, -0.04145557, 0.08092876, -0.06304100, 0.12684005, 0.00627870, -0.05770475, -0.16984427, -0.05785407, -0.03173384, -0.00987364, -0.18776730, 0.03849364, 0.03995531, 0.01429032, -0.08445694, -0.08787877, -0.01822013, -0.04763284, -0.23964858, -0.03024585, -0.03969363, -0.01165390, -0.00769846, -0.05634001, -0.14421123, 0.05460120, 0.11549143, 0.10481280, -0.00260422, 0.07365540, 0.09942629, 0.02966167, 0.12117945, 0.03243911, 0.10313807, -0.03439180, -0.06939388, 0.03040787, 0.07046378, 0.05323650, 0.12063521, -0.03617180, 0.20508365, 0.00178384, -0.22491157, 0.04745322, 0.19805266, 0.07108063, 0.11317138, -0.02124089, 0.08842215, 0.01574452, -0.20521200, 0.10506784, 0.18262330, 0.09078974, 0.04531233, -0.09193253, 0.03990771, -0.05272440, -0.30491492, 0.02332004, 0.12420714, 0.12796889, 0.09187047, -0.10428360, 0.05579921, -0.05530791, -0.23128140, 0.02528972, 0.07189050, 0.10286774, 0.06881017, -0.10142490, 0.10830490, 0.00103967, -0.15861975, 0.02195671, 0.11702982, 0.02660209, 0.01769663, 0.01967222, 0.06730650, 0.05775423, 0.04323318, 0.07315063, 0.10619375, 0.07784426, 0.06868125, -0.01448032, 0.05460818, 0.03875998, 0.13182162, 0.02952023, -0.01734443, -0.01555588, 0.06022092, 0.04173663, 0.00010320, 0.12186573, 0.08968543, 0.08834220, -0.20476800, 0.09861724, -0.01202269, -0.03115830, -0.07078058, 0.09416624, 0.09313931, 0.07691074, -0.18581127, 0.09211366, -0.14167732, -0.02128990, -0.01593809, 0.03756096, 0.01861356, -0.03356783, -0.12571484, 0.04299338, -0.17223991, 0.11986447, 0.18303850, 0.06243430, -0.06084673, 0.11467440, 0.08711231, 0.06647366, 0.16062038, 0.04756919, 0.09251966, -0.01895894, -0.26339188, 0.07005946, -0.01043004, 0.09125769, 0.00860542, -0.02613159, 0.08077426, -0.05365355, -0.36543831, 0.09593215, 0.10132871, 0.08351587, 0.03349216, 0.01031950, 0.10098031, -0.02806982, -0.34496847, 0.09349444, 0.09900393, 0.09978536, 0.01823642, -0.10716823, -0.02279560, 0.08012713, -0.20070979, 0.09881205, 0.01801275, 0.07628857, -0.05045805, -0.22012684, -0.00293553, 0.12961665, 0.03725841, 0.05307321, 0.08196418, -0.04372854, 0.00289062, -0.23133646, 0.09947698, 0.11876784, -0.00393978, 0.05248227, 0.17242420, 0.07209885, 0.03625550, -0.06664979, -0.01528264, 0.02613828, 0.12623933, 0.10786612, 0.06418595, 0.04179458, 0.11415917, 0.00464687, 0.08390552, 0.16884883, 0.10822549, 0.00316949, -0.05787044, 0.08394639, 0.02496805, -0.02195332, -0.03676660, 0.16369289, 0.05380132, -0.00472283, -0.14947307, 0.00643629, 0.02020257, -0.10581623, 0.06076503, 0.01139393, 0.06356247, -0.02207381, -0.12078688, 0.03623935, -0.10307629, -0.07598659, -0.08702894, -0.03788637, -0.09170036, -0.04765101, -0.17651685, -0.01818052, -0.17882611, 0.11675876, 0.17041661, 0.06951656, -0.05501731, 0.05406722, 0.19879167, 0.07371851, 0.13312048, 0.01098895, 0.04826597, -0.00461521, -0.16081947, 0.11040122, 0.04777138, 0.07266776, 0.09200473, 0.09881613, 0.03494092, 0.11073233, -0.38081577, 0.08645549, 0.10063154, 0.02189079, -0.05139472, -0.05315424, -0.04936289, 0.11093058, -0.17899077, 0.03843913, 0.09572876, -0.04588563, 0.00686414, -0.28219169, -0.21556237, 0.22856455, 0.06080106, 0.00709195, -0.04338305, -0.08851060, -0.06711975, -0.26987424, -0.14261703, 0.10925733, 0.23986442, 0.00332717, -0.08532274, -0.04106825, -0.12817535, -0.11885560, -0.10967037, 0.14128304, 0.10730457, 0.00047718, 0.12019472, -0.05295916, -0.01702139, 0.03343452, -0.01429524, -0.03390463, 0.08404254, -0.00638353, 0.02412706, 0.03326145, 0.05771340, 0.03915827, -0.09334285, -0.01224276, 0.01761748, 0.05955618, 0.01628313, 0.01820998, 0.07946391, -0.02369521, 0.02220607, 0.10151479, -0.01237483, 0.02526707, -0.01291451, 0.04146987, 0.05554673, -0.01900541, 0.04916636, 0.04446583, -0.03486433, -0.04575670, -0.03513590, -0.00640374, -0.01922287, 0.10687704, -0.10961109, 0.05550147, -0.04621882, -0.11289386, -0.08097539, -0.11849557, -0.00860937, 0.12124934, 0.02984572, 0.01314694, -0.02965244, 0.04127226, 0.17684200, -0.00342267, 0.04818540, 0.02157760, 0.02100508, 0.07395329, -0.07115584, 0.05712348, 0.10513362, 0.06738057, 0.08493975, 0.02522421, -0.07389243, 0.19961533, -0.02413992, 0.04655896, 0.07317989, 0.00748386, -0.06972216, 0.01658872, -0.14708374, 0.37325472, 0.25761586, -0.09605344, -0.00428902, -0.05531330, -0.02009436, -0.05132975, -0.13604774, 0.36747491, 0.25820166, -0.16057070, -0.14449976, -0.04805058, -0.08851775, -0.20349336, -0.14191727, 0.15067200, 0.25578150, -0.18810175, -0.29621571, -0.09414822, -0.10612357, -0.02744115, -0.23316975, 0.11021812, -0.00621180, -0.02331476, -0.13325636, -0.05032074, 0.03313762, -0.01521098, -0.01612133, -0.09628574, -0.06120405, 0.03879554, -0.03873475, 0.00453919, 0.02856234, -0.02819508, 0.11937302, 0.10091819, 0.01588380, 0.10653932, 0.04394976, 0.13790207, -0.03386703, 0.09629095, 0.14897889, 0.09648862, 0.10768943, -0.03478903, -0.07418024, 0.01426712, -0.04404510, 0.07543410, 0.08296019, -0.05721162, 0.07450690, 0.00212720, -0.10717738, 0.06727961, -0.00789394, -0.06234870, -0.00145374, -0.01096588, 0.04368872, 0.00848690, -0.02244256, 0.02009943, -0.03926613, 0.00723454, -0.04930554, 0.01396737, 0.04768151, -0.00264707, 0.03519455, 0.07840360, 0.06492676, -0.05736609, -0.06828935, -0.04178805, 0.00399857, -0.03300660, -0.01011129, -0.10576171, -0.09231348, 0.04673965, -0.15188502, 0.22340624, 0.18207264, -0.13068032, -0.11966794, -0.06642549, -0.03499859, -0.00502184, -0.14102493, 0.22679564, 0.40995398, -0.15472701, -0.18031323, -0.06649001, -0.16726796, -0.09770851, -0.12442635, 0.14479753, 0.33000508, -0.16784850, -0.28717172, -0.08937141, -0.23479643, -0.14115037, -0.17634508, 0.07031996, -0.08385411, -0.10541660, -0.19448914, -0.14150821, -0.15149429, -0.08515031, -0.12843230, 0.13258570, -0.08336981, 0.05051916, -0.18381734, -0.10909669, -0.04665759, -0.07961652, 0.03136810, 0.09485292, -0.12716669, 0.02224682, -0.10181230, 0.11697396, 0.02284392, -0.09017870, 0.09237646, 0.15525068, -0.04782150, 0.05828063, 0.02192861, 0.04948846, 0.09710339, 0.09541224, 0.05799734, 0.03140888, 0.08285205, 0.05689903, 0.17752960, 0.02380069, 0.10406759, 0.03223672, 0.10262302, 0.02339801, 0.03581996, 0.00426583, 0.06365888, -0.02716988, -0.00028954, -0.10322071, 0.04620491, 0.06235715, -0.07177228, -0.05966213, -0.01711412, -0.04793374, -0.15282804, -0.02965318, -0.07487874, -0.09566471, -0.04921928, 0.02090399, -0.02494189, -0.11680228, 0.00298053, 0.01432426, -0.15681131, 0.00806695, 0.00373378, -0.03929800, -0.00009960, -0.02379986, -0.02315633, 0.00580348, -0.12636687, 0.01851265, 0.15311511, -0.11294014, -0.11090620, -0.15984593, -0.07968003, 0.06588251, -0.14169608, 0.00373938, 0.21239009, -0.12065095, -0.18886937, -0.19704124, -0.07700075, -0.05917703, -0.13468321, -0.02874793, 0.12682441, -0.06409261, -0.27600238, -0.06397653, -0.11650939, -0.03975649, -0.01088060, -0.02595812, 0.06889915, -0.02535671, -0.12666447, -0.07089439, -0.02373640, -0.12390178, -0.12117431, 0.06637299, 0.10949201, 0.10372569, 0.01335525, -0.02267700, 0.02542485, -0.15518411, 0.01066696, 0.07926694, 0.08686748, 0.05613423, -0.04117900, 0.03861721, 0.03678520, -0.05766218, 0.01719416, 0.04955067, -0.06538728, -0.06518936, 0.14110784, 0.01675339, 0.02878266, 0.02475670, -0.02671417, -0.02820528, 0.02181962, -0.06382323, -0.02989717, 0.01824326, -0.06971678, -0.12843855, -0.02875490, 0.01069944, -0.02238085, -0.01253495, -0.01977527, 0.05308697, -0.09861089, -0.10861924, 0.01487358, 0.00804825, -0.12462186, -0.11330500, 0.03129059, -0.04777665, -0.18800966, -0.09354606, -0.09206345, -0.06200010, 0.09341735, -0.03914179, 0.00566864, 0.05222645, -0.04783424, -0.09731867, -0.06018889, 0.11242956, 0.17874292, -0.17050806, -0.04156008, -0.07746336, -0.10948795, -0.00721706, -0.15052268, 0.04994516, 0.16661069, -0.11363649, -0.24017085, -0.08113047, -0.16160449, -0.05936325, -0.24041474, 0.01065592, 0.11284271, -0.14139383, -0.35702667, -0.13528313, -0.12707032, -0.04336483, -0.13193801, -0.09349260, 0.14393966, -0.10864563, -0.28099921, -0.17872560, -0.08488339, 0.03183645, -0.11959989, -0.06312868, 0.23715137, -0.03449472, -0.05557549, -0.02692098, -0.06514008, -0.13167548, -0.04991978, 0.01678637, 0.13025929, -0.05524921, -0.06124881, -0.00538735, -0.01836927, -0.19556069, -0.02037040, -0.06677373, 0.09500275, -0.10908940, -0.05894739, -0.04656124, -0.09486993, -0.21196584, -0.15208679, -0.12512349, -0.00597852, -0.06402864, -0.02292787, -0.04986692, -0.06964915, -0.31538707, -0.11677444, -0.04006536, -0.05232012, -0.02073707, -0.08654651, -0.04560073, -0.02029018, -0.20933671, -0.12804605, 0.01787786, 0.03070971, -0.13241391, -0.00368542, -0.01980907, -0.21416035, -0.09500574, -0.15413728, 0.10396358, -0.07546088, -0.19199817, 0.02617131, -0.12239984, -0.13478820, -0.14343801, -0.04516759, 0.13019432, -0.01985642, 0.01265512, -0.09014487, 0.02765141, 0.03128143, 0.07159033, 0.01650461, 0.05778170, 0.10548145, 0.01777681, -0.15469787, 0.01966470, -0.02254237, -0.03450503, -0.12443260, 0.10080494, 0.06261613, -0.16354324, -0.26973489, -0.08514634, -0.04567402, -0.02546540, -0.13988213, 0.01634037, 0.27194092, -0.07032626, -0.30932033, -0.03092946, -0.10055724, -0.04337863, -0.23460987, -0.05416436, 0.36019406, -0.05416435, -0.17246529, -0.08967829, -0.01478142, -0.09105401, -0.11665788, -0.04514535, 0.23364581, -0.04266921, -0.14019683, 0.00194982, -0.05892160, -0.08141102, -0.02301759, -0.11779026, 0.17668955, -0.10502204, 0.01027643, 0.05196008, 0.03129613, -0.15211594, -0.10123369, -0.07836249, 0.14306606, -0.00500718, 0.01408164, 0.03048259, -0.07055283, -0.23379594, -0.02539618, -0.09233709, 0.05446423, -0.04909679, -0.12468717, -0.00636164, -0.06099420, -0.36630157, -0.11884497, 0.03703173, -0.04916722, -0.13774705, -0.17147127, -0.03813136, -0.13485509, -0.18051675, -0.20749627, -0.05431157, -0.07657339, -0.10481083, -0.18397287, -0.12332997, -0.15108454, -0.29778755, -0.19285114, 0.09723672, -0.09312614, -0.12571599, -0.02940939, -0.20791996, -0.10257145, 0.11031250, 0.00591888, 0.12167972, -0.03933417, 0.03114586, 0.01259453, -0.09868389, -0.09296690, 0.05879266, 0.00049356, 0.06404459, -0.00028360, 0.03014172, 0.03816469, 0.04039805, -0.01323281, -0.05195809, 0.04715010, 0.00768783, 0.17734469, 0.03818993, 0.00286288, 0.10364640, 0.01394862, 0.03922946, -0.00042270, 0.03007396, 0.22296081, -0.07155530, -0.14387946, -0.02408181, -0.03311126, 0.09288977, -0.03459078, -0.01175706, 0.23615812, -0.06943899, -0.16572854, 0.05573298, -0.05364605, 0.04271468, 0.05763866, 0.01338675, 0.29790020, 0.06962597, -0.14212333, 0.09434255, -0.04200274, 0.13303261, 0.07201441, 0.06257675, 0.23250432, 0.05615956, -0.00263248, 0.05018691, 0.02313964, 0.04746009, -0.01202828, 0.01872948, 0.14273587, 0.08823322, -0.06459551, 0.06902850, -0.00337639, -0.09343942, -0.01999667, 0.04740078, 0.07157160, -0.03940631, -0.09497194, 0.08787045, -0.06497798, -0.15638879, -0.05865734, 0.04883923, 0.11994594, 0.06899344, -0.20454609, 0.01097435, -0.15624960, -0.03998321, -0.13429128, 0.04226015, 0.03150596, -0.11417062, -0.11449253, -0.03324338, -0.18053968, -0.14323878, -0.15937948, -0.01191338, -0.12774473, -0.13072990, -0.15020996, -0.13937493, -0.12459321
+    .float -0.17298071, -0.19537207, -0.06180979, -0.12942363, -0.15971352, -0.03923952, -0.09277927, -0.18838462, -0.11744507, 0.01682583, -0.06519527, -0.05821035, -0.10113396, -0.10408910, 0.03789605, 0.03256102, 0.01079965, 0.04843131, -0.03972869, -0.12255985, -0.07842680, -0.03271193, -0.01331170, 0.01842926, -0.03217235, -0.04544348, 0.09125319, -0.05220924, 0.01009186, 0.00656838, 0.01885082, 0.07757495, 0.04197977, -0.02697675, 0.03029092, -0.11438446, 0.08762670, 0.02456757, 0.09989382, 0.05748465, 0.04211899, -0.07814714, 0.05778844, 0.01190615, 0.02066923, 0.00483508, -0.08179069, 0.04273444, 0.07183103, 0.05262241, 0.03427591, 0.08236785, 0.02592542, 0.06211038, 0.02763655, -0.06123812, -0.02161383, 0.04694950, 0.02441711, 0.06541098, -0.00784626, 0.08686657, -0.02710323, -0.04827826, 0.03891996, 0.05256254, 0.02759394, 0.02485445, 0.03621245, -0.02421303, -0.03441886, 0.12293172, -0.01891601, 0.05119519, 0.04414301, -0.02121757, 0.02033770, -0.00550283, -0.10412939, -0.02188212, -0.00078391, 0.06777252, -0.09670845, -0.04394897, 0.10181930, -0.03143243, 0.06778148, 0.03040515, -0.08367632, 0.02613372, -0.05513347, 0.02016381, -0.04323481, -0.03008228, 0.05090173, 0.02421709, -0.19777508, -0.02193087, -0.13658850, -0.03854100, -0.07956202, -0.03503482, 0.00969006, -0.08278226, -0.03753192, -0.10131966, 0.03427323, -0.01887923, -0.02874337, -0.13210292, 0.01323434, -0.03580096, 0.04808236, -0.06997970, 0.02459158, -0.05638589, 0.04747231, -0.11245506, -0.04945057, 0.00560051, 0.03606926, -0.04249945, -0.03856527, -0.01621954, 0.00548446, -0.15986702, -0.08796730, -0.00044134, 0.00825546, 0.00272448, -0.04920061, 0.00186519, -0.01464862, -0.03857970, 0.03428750, 0.06585266, 0.05313366, 0.02690321, 0.08490780, -0.04472664, 0.08110826, -0.07370210, -0.00391277, -0.02406367, 0.02151076, 0.09227176, 0.08355533, 0.01564979, 0.04336340, -0.15985319, 0.07969210, 0.07370435, 0.04770646, 0.03543160, -0.06832042, -0.00240692, 0.04395192, 0.06034059, -0.00569864, 0.00363712, 0.03459015, 0.05717374, -0.00130704, 0.03412096, 0.07037364, 0.04124555, 0.04030187, 0.03950145, 0.08920173, 0.05951778, -0.10247415, 0.03082922, -0.02308572, 0.00103397, 0.04822868, 0.02229941, -0.07514353, 0.02410507, -0.10810103, 0.00027501, 0.03402066, 0.03610121, -0.03638569, -0.00864469, -0.02935838, 0.10334592, 0.05645787, -0.06344242, -0.03563353, 0.05075630, -0.04206694, 0.06755979, -0.09475805, -0.04941579, -0.03912550, -0.03781809, -0.03538913, -0.12497012, -0.07068289, -0.00235212, -0.04038939, 0.02025113, 0.00031051, 0.01732846, 0.05956523, -0.09825923, -0.08231386, -0.07507569, 0.05703261, 0.03681251, -0.03423824, -0.07200015, -0.06585135, -0.09780203, -0.09329777, -0.05438811, 0.04576740, -0.03612605, 0.00032488, 0.04572570, -0.06556866, -0.09283879, 0.02944099, -0.04706984, 0.11356459, 0.00146893, -0.07295967, -0.18619224, 0.04076162, 0.00358462, -0.00298703, 0.02748419, 0.07708500, -0.01821370, -0.04295979, -0.17228338, 0.08288097, -0.02889175, -0.00224102, 0.02451301, 0.11025349, 0.08240031, -0.05021852, -0.21812299, 0.02255855, -0.00301586, 0.00880790, -0.01238924, 0.03951710, 0.01260813, -0.05763657, -0.12996148, -0.03813050, 0.08564637, 0.02800038, 0.06883167, 0.07131611, 0.02414962, -0.05324860, -0.01041679, 0.05982799, 0.00582611, 0.03973779, -0.03169633, 0.01462184, 0.01250016, -0.01152929, -0.00397049, -0.02203741, 0.06212804, -0.05250571, -0.00549214, 0.04250059, 0.05547335, -0.05511250, -0.03807596, 0.08852063, 0.30092439, 0.08775062, 0.02218672, 0.05772243, 0.03537559, -0.05392428, 0.05172654, 0.05811008, 0.00881810, 0.10653252, 0.08635657, 0.03412305, -0.07669398, -0.07639278, -0.03233676, -0.04277444, -0.06972961, -0.03702283, -0.01290872, 0.06545988, -0.01276768, -0.01463688, -0.09274019, 0.03844341, -0.03150337, 0.00605267, 0.02392124, 0.11258351, 0.05127015, 0.03083541, 0.00063669, 0.01573217, -0.13086990, 0.04090345, 0.03997238, 0.00038410, 0.05905381, -0.03691021, 0.06303857, 0.00247898, 0.02148507, 0.01404913, -0.06046026, 0.08835276, 0.07840698, -0.09888564, 0.01783129, -0.04512222, 0.01939149, -0.05095636, -0.01273155, 0.13396533, 0.01267736, -0.09594981, -0.08627361, -0.01618903, 0.09755451, 0.01333700, -0.04681412, 0.15354873, -0.05921244, -0.14129776, -0.11385356, -0.05673648, 0.05218515, -0.07002891, 0.00061385, 0.18689719, 0.07975608, -0.16730717, -0.13937360, -0.00147040, 0.06687543, -0.02999857, 0.03135338, 0.22009669, 0.05856276, -0.11355654, 0.00855836, -0.04682541, 0.11633463, -0.00313502, 0.04320759, 0.10410026, 0.09957759, -0.15823634, 0.06419339, 0.01155456, -0.00446393, 0.08211844, 0.04096247, 0.12075115, 0.02642024, -0.10097737, 0.01057607, 0.00156855, 0.06103559, 0.07274712, 0.16217890, 0.03968616, 0.03681903, -0.13957047, 0.02490285, 0.03935870, -0.03749242, 0.09607783, 0.16942723, -0.03701496, -0.01452236, 0.01724756, -0.06806862, 0.00098206, -0.08935236, 0.01316840, 0.07703879, -0.05361160, 0.01999660, -0.00718673, -0.10908556, 0.00445381, -0.08795220, 0.06003763, -0.01116885, -0.01202700, 0.13146965, -0.00930513, 0.04501719, -0.03155184, -0.13132223, 0.02641900, 0.07837620, 0.06958363, 0.05260082, -0.19963405, -0.02452477, -0.08332862, 0.03922206, 0.08987365, 0.03186189, -0.08162981, 0.13408107, -0.25180787, 0.01965347, -0.07998759, 0.05219107, 0.07715322, -0.02282958, -0.04788060, 0.07789982, -0.31819880, -0.07915095, -0.02425790, 0.27336192, -0.02666692, 0.06425307, 0.08389788, -0.04338710, -0.24388848, -0.07110519, -0.00750973, 0.08697333, -0.01678945, -0.01693434, 0.19669940, 0.00515261, -0.04526071, -0.07112835, -0.01975595, -0.00795924, -0.02620996, -0.00913884, 0.26037645, -0.06004009, 0.10347734, -0.05728927, 0.12986402, 0.02102953, -0.03635536, 0.03832803, 0.30025122, 0.05704565, -0.02946774, 0.08553548, 0.10225964, -0.01545287, -0.02345080, 0.09054047, 0.29926184, 0.16678429, -0.11234964, 0.01908020, 0.03895285, 0.09624064, -0.00757957, 0.10763764, -0.03344449, 0.06560759, -0.13232632, 0.08849160, 0.08203585, -0.13157591, 0.16243616, 0.10192010, 0.07617520, -0.03550830, -0.10031471, -0.06788723, 0.03160993, -0.06538767, 0.01195996, -0.03264126, -0.07891887, 0.08697473, -0.12254494, -0.11392132, 0.04222601, -0.00575567, -0.02318452, 0.00080509, -0.11048550, 0.08348261, -0.06855033, -0.13383022, 0.09065068, 0.04934256, 0.05946531, 0.02270723, -0.10194253, 0.17325170, -0.26989830, -0.09286019, -0.02810925, 0.06934206, 0.05588821, 0.11956549, -0.05972599, 0.21927917, -0.37129965, -0.05128291, 0.07297488, 0.08133351, 0.09714598, 0.02409133, 0.05523850, 0.11756759, -0.34458953, -0.04355937, 0.02483752, 0.26083320, 0.06239593, 0.07738517, 0.10071506, -0.01985414, -0.31231171, -0.16256832, 0.05621954, 0.01693515, 0.04326041, 0.04515237, 0.17628010, -0.08828299, -0.04057574, -0.07264531, 0.00848037, -0.15433422, 0.06372948, 0.03182410, 0.24152620, -0.01021394, 0.04267418, -0.06290610, 0.08185413, -0.09890172, 0.03094634, -0.02235468, 0.23376200, 0.09876394, -0.00008556, -0.07538444, 0.03915446, -0.04004482, -0.06890184, -0.01235248, 0.16229959, 0.04074040, -0.17212208, -0.13178939, -0.03091344, 0.00022079, 0.04880381, 0.07573518, -0.05350773, 0.09011722, -0.17064381, 0.04675046, 0.03514756, 0.02061572, -0.02119225, 0.09098401, -0.05420054, -0.08583212, -0.14595200, -0.05775253, 0.06692544, 0.00250274, -0.14036466, -0.06764342, 0.01224166, 0.02518593, 0.03751764, -0.07357637, 0.00074268, -0.00337284, 0.06437880, 0.05323763, 0.07515824, 0.04979253, 0.04589657, -0.12471129, 0.05430030, 0.10112695, 0.00222007, -0.01478735, 0.09965538, 0.07441733, -0.05563683, -0.42121652, 0.05400092, -0.02865503, 0.07143840, -0.00010894, 0.08940322, 0.06528130, -0.13092145, -0.09678369, 0.11843768, 0.05281416, -0.02762469, 0.10635748, 0.13018990, 0.05395487, -0.20934165, -0.00926165, 0.10444354, 0.17101415, 0.12826857, 0.08436064, 0.03296866, 0.02074781, -0.11413965, -0.05236038, 0.06321742, -0.08009801, 0.10004977, -0.02633341, 0.06556282, 0.03529757, -0.07966495, -0.11234313, -0.06317825, 0.00778548, -0.03704811, -0.05865277, 0.14725052, -0.01971233, -0.12043723, -0.20266777, -0.13764682, 0.07472237, -0.08414392, -0.06204070, 0.06431922, -0.04852935, -0.16806459, -0.09543961, -0.11582828, 0.15970728, -0.07165425, -0.07882697, 0.06059738, -0.02133598, -0.11866469, -0.12317745, -0.11536300, 0.18646149, -0.06014512, -0.07780760, 0.11082207, -0.00449643, -0.07325941, -0.05587695, -0.13746041, 0.04693210, -0.05921784, -0.03506829, -0.12079468, -0.08968387, -0.09589685, -0.00530054, -0.10512885, -0.09818707, -0.04044320, -0.05844929, -0.05038351, -0.07867719, -0.06159084, 0.00632824, -0.04018503, -0.03389298, -0.12904075, -0.06698614, 0.06758150, -0.09460972, -0.05127246, 0.05243823, 0.01635554, -0.01489779, -0.01881323, -0.05882007, 0.08900296, -0.13536149, 0.00440259, -0.04145057, 0.05545790, -0.10948637, 0.02826268, -0.00771940, 0.12322288, 0.02943173, -0.03844027, 0.18175404, 0.07067494, -0.01616787, 0.03221646, 0.15409510, 0.20811814, 0.08115572, -0.11097011, -0.04402314, 0.07774696, 0.03695888, 0.15414663, 0.08643257, -0.06565861, 0.02880178, -0.24408706, -0.05845315, -0.06656007, 0.03964842, 0.07779208, -0.02894040, -0.13155966, 0.04259484, -0.22547317, -0.02847730, -0.10388997, 0.11882219, -0.04029845, -0.02249397, -0.06553721, 0.00823094, -0.22712232, -0.05542462, -0.11346351, 0.08738069, -0.09170895, -0.09885895, 0.00341896, 0.00419841, -0.14116523, -0.11467713, -0.11953589, 0.12652662, -0.13806359, -0.09283837, 0.14182983, -0.12983570, -0.05518341, -0.07551827, -0.08122708, 0.04098158, -0.03295303, -0.06557965, 0.11326306, -0.07317992, -0.08968773, -0.08546405, -0.00901892, -0.18061678, 0.01201574, 0.01457176, -0.17811823, -0.15139607, -0.10720109, -0.03882547, -0.07619128, -0.17208016, -0.14264019, -0.17388515, -0.00219544, -0.04337848, -0.10809306, -0.04184744, -0.02838987, -0.01926084, -0.03979042, -0.03787175, 0.04065645, -0.11344180, -0.09552580, 0.15746593, 0.01837202, -0.17441389, -0.04449514, -0.10931589, 0.09175114, -0.16410725, -0.04560450, 0.25959268, 0.00423013, -0.12385190, -0.04970802, 0.01937757, 0.20682155, -0.07710519, 0.01236737, 0.20364372, 0.09314902, -0.04186118, 0.08030517, 0.02798992, -0.02334785, 0.05860560, -0.14554186, 0.12818372, 0.01737529, 0.04882200, 0.13228482, 0.05695764, -0.12903161, 0.09462184, -0.18925203, -0.00473098, -0.02317600, 0.10065255, 0.07292585, -0.03725588, -0.07858034, -0.03202261, -0.15731525, 0.03654543, 0.00366046, 0.12292963, -0.04578413, -0.09044039, 0.07744794, 0.01087129, -0.17331994, 0.10198138, -0.09094610, 0.10390804, -0.10604164, -0.05297525, 0.09561057, -0.06796895, -0.18068983, 0.04507781, 0.04744330, -0.03348156, 0.02060047, -0.08892674, 0.08518112, -0.09332582, -0.16672054, 0.00644712, -0.03532811, -0.05640378, -0.04737792, 0.02465822, -0.19267097, -0.06735663, -0.17135726, 0.09932905, 0.12814984, -0.26081261, 0.03372858, -0.02231095, -0.07940652, -0.08237881, -0.09831144, -0.04085301, -0.14325477, -0.15501434, -0.07119568, -0.04911191, -0.04602730, -0.07769285, -0.07301626, -0.04843830, -0.05771213, -0.12920471, -0.03845518, 0.01460364, 0.04620633, -0.00206113, -0.18801802, 0.06603720, 0.01209613, -0.07858748, 0.02809679, -0.03655061, 0.03811680, -0.01164980, -0.24300529, 0.28356114, -0.10903104, -0.10711478, -0.04726881, -0.05271682, 0.17084613, -0.06207344, -0.26383144, 0.07611898, 0.02278780, 0.02274304, 0.05537430, 0.01641544, 0.17325982, 0.07482219, -0.22379020, -0.00390118, -0.05077977, 0.01041400, 0.00864764, -0.03079816, 0.09996723, 0.03410713, -0.14077833, -0.05455516, 0.04375923, -0.07488804, -0.00583766, -0.12489777, 0.11776967, 0.06185603, -0.07366867, 0.05311552, 0.05250682, 0.01376317, 0.01342401, 0.00913095, 0.08976815, -0.03877519, -0.09252920, 0.00938369, -0.03908414, -0.01637652, 0.05475834, -0.05841645, 0.00341252, 0.06293858, -0.18443464, 0.07312335, 0.04848732, -0.12944932, -0.05485249, 0.00960733, -0.06799082, -0.03019548, -0.20227943, 0.02121462, 0.00582789, -0.10468899, 0.06850576, -0.01337904, -0.14677511, 0.10107798, -0.09152218, 0.10122164, 0.07908373, -0.02498831, 0.10012567, -0.01367615, -0.00666292, -0.07321064, -0.06369492, -0.00472306, -0.03206038, -0.16520369, -0.12537691, -0.11351053, 0.08648606, -0.00697603, -0.21699448, -0.11256477, 0.07588830, 0.01055695, -0.05319404, -0.06073111, -0.01699485, 0.10162980, -0.26407653, -0.08669397, 0.06563486, -0.09838666, -0.02102634, 0.04656948, -0.05817351, 0.10387105, -0.23920815, -0.32785624, -0.03889827, -0.00534120, 0.00662095, -0.06379756, -0.01413392, 0.04201097, -0.39771482, -0.30366302, 0.01676465, 0.00814684, 0.02849665, -0.02318673, 0.11445282, 0.03909255, -0.40828213, -0.26986459, 0.00157910, 0.04268667, 0.08801816, 0.06880986, 0.17334402, 0.14336167, -0.28006780, -0.04760781, 0.02702873, -0.07213110, 0.07258185, 0.03908622, 0.09844194, 0.00396154, -0.08732323, -0.06208005, -0.02812859, -0.08884159, -0.00786587, -0.01223231, 0.11867467, -0.03803508, -0.03859070, -0.08067878, -0.03482786, -0.08854637, 0.04182210, 0.02323991, 0.16588393, -0.03730430, -0.07575038, 0.02148319, 0.07693962, -0.04552660, 0.02001313, 0.06101923, -0.12822437, 0.08130164, -0.08131576, 0.02222897, 0.06559241, -0.00655902, 0.06576452, 0.05609363, -0.05653423, 0.09571842, -0.10450871, 0.02817489, -0.02078929, -0.06387518, -0.01629156, -0.10327120, -0.17415857, -0.16859142, -0.10369223, -0.04478684, -0.03741967, -0.10806070, -0.08253124, -0.06272907, -0.06559607, -0.07967348, -0.15691255, -0.09478132, -0.05156743, -0.03926986, -0.15111451, -0.06916592, -0.11329919, -0.09807170, -0.23220271, -0.25434992, 0.00514949, -0.01512626, -0.04627272, 0.00421121, -0.14182547, 0.10679542, -0.34879079, -0.24346954, -0.02940429, 0.06971124, -0.00662587, -0.00466471, -0.02020645, 0.09586578, -0.36153993, -0.16099340, 0.06030159, 0.11929157, -0.00530560, -0.01433538, 0.04062419, 0.03262776, -0.55701673, -0.02876830, -0.01573036, 0.03244521, 0.05756408, 0.04809899, 0.09060260, 0.05097899, -0.32382971, -0.04554103, 0.00571917, 0.04248121, -0.00592956, 0.04149425, 0.15634683, 0.00585336, -0.25349620, -0.02929202, -0.01680219, 0.00050563, 0.02522622, 0.05961672, 0.06537909, 0.00445384, -0.13707499, -0.07513365, -0.02944088, 0.00009143, -0.00185154, -0.03932924, -0.09322011, -0.02514172, -0.08665275, -0.11101299, 0.01095261, -0.02662711, -0.02564035, 0.00942990, -0.23182219, -0.03694338, -0.04269051, -0.02028992, -0.06354263, -0.03505861, 0.00682224, -0.03768134, 0.01041936, -0.12066542, -0.08176581, -0.10935868, -0.14038958, -0.03320598, -0.13563465, -0.18573651
+    .float 0.02311948, -0.03109706, -0.01307843, -0.03243149, -0.04749588, -0.02693855, -0.10183541, -0.11478540, -0.07197893, -0.04642748, -0.10370918, -0.07238369, -0.09187455, -0.02768981, -0.06625167, -0.06519129, -0.07324588, -0.10806641, 0.00494123, 0.01272584, -0.15026459, -0.09811531, -0.03572473, -0.16331343, -0.20835002, 0.06959037, 0.03759940, -0.05075003, -0.22027344, -0.02324414, 0.07510190, 0.04913970, -0.06698254, -0.05340128, 0.05318504, -0.10753238, -0.06158059, -0.01243832, 0.01222889, -0.01113622, -0.01372973, -0.28424996, 0.03805141, -0.18784086, -0.01711357, -0.14156300, 0.00920888, -0.03187279, -0.09621496, -0.42742530, -0.05583522, -0.19557822, 0.00879459, -0.27253756, -0.09669641, -0.12214816, -0.11664107, -0.28691736, -0.10225729, -0.17268978, -0.09706726, -0.13784087, -0.09620318, -0.12321444, -0.10799786, -0.29038960, -0.10639642, -0.25356302, -0.17188342, -0.11675978, -0.18705153, -0.26072350, -0.11927186, -0.19452855, -0.06603183, -0.05896648, -0.13117176, -0.07087179, -0.18683797, -0.22237086, -0.23313090, -0.10674348, -0.14348686, -0.06748442, -0.10338945, -0.04697025, -0.18566534, -0.19665362, -0.34942800, -0.07638083, -0.08981353, -0.09124801, -0.19660948, -0.00661588, -0.21847247, -0.25849423, -0.14292623, -0.18393174, -0.07427590, -0.01465790, -0.12092654, -0.00142802, -0.16046555, -0.25601503, -0.20142445, -0.08542602, -0.10454915, -0.03283872, -0.11617392, -0.08732961, -0.07355919, -0.08744217, -0.18019618, -0.10008626, 0.08361468, -0.12924302, -0.00426808, -0.06717633, 0.06873810, 0.04632507, 0.01083535, -0.08072983, 0.04796669, -0.23716526, 0.02335010, -0.09852559, 0.01078337, 0.00916171, 0.06299098, -0.01680935, 0.10150199, -0.32398379, 0.04266908, -0.00412321, 0.05422471, 0.09120719, 0.06394621, -0.03177324, 0.03117498, -0.17573042, 0.00197738, -0.01156406, -0.02087555, 0.01650088, 0.01659116, 0.06968138, 0.09794604, -0.10040168, 0.00276664, 0.03768124, -0.09343150, 0.03520174, 0.04927608, -0.06987824, 0.06929724, -0.12858936, -0.04346139, -0.05289018, -0.03819687, 0.02819237, -0.04021014, 0.02514706, -0.01882696, -0.14615540, -0.03187425, -0.11883948, -0.04045736, -0.07335239, -0.08733828, -0.20755294, -0.07303510, -0.10638802, -0.08891424, -0.20832819, -0.16248932, -0.11682308, -0.06305262, -0.27753273, -0.11328064, -0.11713255, -0.02736722, -0.01690236, -0.10003156, -0.19790463, -0.11867111, -0.15278640, 0.01169136, -0.10919879, -0.07859147, 0.02457521, -0.14009111, -0.18477954, -0.27410024, -0.06036716, -0.10923745, -0.01204511, -0.19442903, -0.05738929, -0.16163862, -0.16466229, -0.14163829, -0.06336032, -0.00705108, 0.05389458, -0.05338004, -0.11094349, -0.10434249, -0.14245589, 0.03234481, -0.10506839, 0.02723431, -0.07075506, -0.04935219, -0.07941682, -0.09674238, -0.07893564, 0.12125780, -0.03148991, 0.08127496, -0.26498178, 0.06035723, -0.25395530, 0.02794270, -0.00741654, 0.09475925, -0.06040890, 0.12831438, -0.46303442, 0.03792707, -0.21446101, -0.01730124, -0.00227771, 0.16442102, 0.13270263, 0.03360248, -0.30511147, 0.05036230, -0.06212858, 0.09158238, 0.07651914, 0.09637947, 0.15051295, 0.06251734, -0.33734748, 0.03174352, 0.10670307, 0.03485438, 0.03632228, 0.12865381, 0.03508324, -0.06652495, -0.16763875, -0.05487555, 0.06742243, 0.06510949, -0.00007763, 0.04846055, 0.07845189, -0.15179627, -0.11297669, -0.00046226, 0.04406842, -0.07587892, 0.00276495, -0.01000271, 0.03519554, -0.19003242, -0.06583209, -0.00976704, -0.00803056, -0.08459032, -0.04319555, -0.14977972, -0.00455887, -0.16604163, -0.04955687, -0.02303386, -0.15365548, -0.14767496, -0.10589473, -0.19039318, -0.20850137, -0.14216851, -0.06672672, -0.07485056, -0.11828241, -0.10584085, -0.17652436, -0.16860729, -0.02221382, -0.05931159, 0.09780642, -0.07544640, -0.05964076, -0.03943870, -0.15364197, 0.06362523, -0.09074174, 0.03019410, 0.09393737, 0.01318898, -0.08156578, -0.08927175, 0.00529263, 0.04015692, -0.10560845, -0.00148080, -0.00933424, -0.00456457, -0.07727425, 0.03044470, -0.04710754, 0.12976371, -0.00819953, 0.03865093, -0.02875248, 0.03674363, -0.12220363, 0.04345240, -0.05159058, 0.10157260, 0.01229065, 0.10349945, -0.07762568, 0.00528211, -0.06673574, 0.08672541, -0.01357740, 0.23724563, -0.02431334, 0.06260045, -0.18897805, 0.05203432, 0.02149278, 0.01759093, 0.08021326, 0.19836648, 0.07577414, -0.08168885, -0.22212671, -0.00049126, 0.04528716, 0.07906021, 0.02643120, 0.03707441, 0.04637234, -0.26805827, -0.09971769, -0.00244385, 0.01827989, 0.05709995, 0.02158331, 0.09008961, 0.00557997, -0.25496677, -0.14430159, -0.06302492, 0.14326772, -0.07057650, -0.08093075, -0.03263938, -0.05274461, -0.44741735, -0.06820862, -0.09299600, 0.12888113, 0.01718246, 0.01703285, -0.18769358, -0.00120942, -0.30626863, 0.08163689, -0.02328442, 0.11918039, -0.08041236, 0.01527831, -0.20490558, -0.08935121, -0.05647419, 0.05579482, 0.00585660, -0.08930686, -0.01084638, -0.19073115, -0.13137205, -0.11456971, 0.06050294, 0.10715499, -0.07280510, -0.13628545, -0.06224578, -0.04792183, 0.09807577, -0.04991491, 0.03522563, 0.14823918, -0.01177382, -0.00345595, -0.06753448, -0.05472968, 0.06708183, -0.00916740, -0.07563401, 0.14235827, 0.00050571, -0.11458402, 0.01188007, -0.07128239, 0.07778970, -0.00104870, -0.00930182, 0.22150782, -0.03755262, -0.09357302, 0.02648286, -0.02179577, 0.13593780, 0.05251042, 0.00501228, 0.02385486, 0.04711778, -0.01745167, 0.01027030, 0.09679887, 0.16065821, 0.09275098, -0.06098119, -0.08848662, 0.03814481, -0.00802564, 0.04400294, 0.04921461, 0.23420793, 0.00613354, -0.01577516, -0.16022582, -0.03600591, -0.05953520, 0.00385496, 0.06857702, 0.12161539, 0.05524831, 0.09792413, -0.09071439, 0.04167135, -0.12208896, 0.03572457, 0.08938047, 0.00413550, -0.05173471, -0.08360706, -0.00014237, 0.11139556, 0.08441860, -0.01132878, 0.01622270, -0.02708452, 0.10162318, -0.27287382, -0.02068731, 0.01550540, 0.02923362, -0.03178325, -0.00298804, -0.06761569, -0.08640731, -0.16589096, 0.11292269, -0.01304312, -0.04951263, 0.03686408, 0.01731623, -0.16360341, -0.11573608, -0.07534301, 0.08940688, 0.06019593, -0.12104294, 0.08369762, -0.06011989, 0.03032035, -0.08663759, -0.02486135, 0.02347986, -0.06681617, -0.05378650, -0.09224361, -0.00511018, -0.01558027, 0.07469840, -0.10677885, 0.06917997, -0.03407432, -0.02887098, 0.00693588, -0.01637684, -0.04842567, 0.10852446, -0.13350646, 0.14757247, -0.08667786, -0.12356688, 0.05888413, -0.03096112, -0.03178576, 0.02817754, -0.20632136, 0.11760747, 0.00645830, 0.05348239, 0.09757283, 0.01304728, 0.00635982, 0.02117434, -0.37607619, 0.06159829, 0.01384375, 0.08574876, 0.02924288, 0.01258508, 0.10788871, 0.08460657, -0.14820935, -0.14210311, -0.00053687, 0.03314582, 0.00980194, 0.01681609, 0.14713815, 0.02536944, 0.06651278, -0.29129407, 0.08028544, -0.03597984, -0.04595427, 0.08771847, 0.03556306, 0.02928185, 0.02498101, 0.10245759, 0.12097269, 0.04500134, 0.03179042, 0.15140916, -0.00649780, 0.05776870, 0.17002770, 0.09876338, 0.07019188, 0.01123509, 0.11761598, 0.10345161, -0.06304645, 0.02717460, -0.16454285, 0.07459900, 0.13350098, -0.04319186, 0.08008139, 0.07497636, -0.15903921, -0.05680894, -0.21854123, 0.18497150, 0.07474125, -0.15684758, 0.15472852, -0.03231341, -0.40632051, -0.03489565, -0.05457399, 0.06489109, -0.05633048, -0.07886476, 0.02734205, -0.03026362, -0.05140986, 0.04154059, -0.11436365, -0.08707459, -0.07152583, -0.09881623, -0.00094194, -0.04364817, -0.08635678, 0.04643125, -0.13641034, 0.04055981, 0.03506165, -0.05520177, -0.04193201, 0.08644309, -0.18226516, 0.10915296, -0.21234706, 0.15662171, -0.01102689, -0.06051479, 0.00244505, 0.09440374, -0.04358633, 0.04814941, -0.45487636, 0.05497636, -0.02583282, 0.12598585, 0.07275435, 0.09683641, -0.06854253, 0.07950236, -0.44893736, -0.09494242, 0.03112831, 0.21099932, 0.08289450, 0.07227255, 0.00915975, -0.01427886, -0.11020690, -0.27354839, 0.01894269, 0.09877690, 0.02173117, 0.01864092, 0.00950317, 0.04701122, -0.05677246, -0.12618564, 0.00688511, 0.17989612, 0.02341142, 0.01030546, 0.03509944, -0.02262659, 0.04051611, 0.08583117, 0.08858825, 0.09231609, 0.01701190, 0.02539937, -0.04808326, -0.09976314, 0.20893070, 0.08238640, 0.09282620, -0.09324063, 0.02001100, 0.01682655, -0.13614428, -0.06447306, -0.05780301, 0.05526437, 0.01229998, -0.13087766, 0.11229331, 0.04938610, -0.23987541, -0.02554586, -0.07887194, 0.16134310, -0.00344686, -0.23594418, 0.06130322, 0.04608714, -0.38732269, -0.07480014, -0.01800007, -0.02079098, -0.14226140, -0.06012099, 0.00334225, -0.23788649, -0.01773798, -0.09226321, -0.12531678, -0.03162775, -0.02302670, -0.11964867, -0.10824395, -0.00482730, 0.01256738, 0.05272048, -0.18109198, -0.10759983, 0.03900751, 0.05764846, -0.03449557, -0.02852383, -0.01199815, 0.06924587, -0.26141775, -0.06913945, 0.00229714, 0.09166550, -0.02820497, 0.07007617, -0.03279977, 0.11218457, -0.29187721, -0.10162290, 0.03704286, 0.11475587, 0.03540919, 0.13566513, -0.17142674, 0.10942364, -0.25466749, -0.30927759, 0.04210170, 0.10555788, 0.10973448, 0.07468417, -0.01871867, 0.02214100, -0.01158388, -0.17244244, 0.00450634, 0.01605283, 0.07411957, -0.05804035, 0.14289910, -0.04163215, -0.03394947, -0.06896351, -0.06181996, 0.11953098, -0.15914385, -0.00507063, 0.09136190, -0.16157566, 0.11869591, 0.05409244, 0.05577433, 0.12699686, 0.01869084, 0.03504740, -0.04768506, -0.06158876, 0.09226000, 0.07406861, -0.03595677, -0.12143897, 0.03549399, -0.06299063, -0.10229271, -0.12849124, -0.05029548, 0.00189657, -0.00215891, -0.24307063, -0.03180020, -0.10655763, -0.34794077, -0.15358232, -0.07689837, 0.09849470, -0.11454834, -0.20355439, -0.05422863, -0.09919615, -0.29800919, -0.16682826, 0.03022348, -0.03775438, -0.21327129, -0.09136304, -0.15091382, -0.19554000, -0.07438068, -0.04960742, 0.02617557, -0.03661833, -0.11365918, -0.02087863, -0.08619397, 0.02811221, -0.05955730, 0.05689731, -0.10398099, -0.15005362, 0.05228269, 0.01879873, -0.08070192, -0.04570993, 0.11901975, 0.08055908, -0.12638398, -0.08754332, 0.05106410, 0.21053466, -0.03219752, 0.09292988, -0.03837592, 0.12948684, -0.02472951, -0.31145534, 0.13316809, 0.18949620, 0.02028941, 0.02750232, -0.14106990, 0.04658425, -0.08461615, -0.33799681, -0.06812992, 0.16255799, -0.03824779, -0.04468312, -0.06550165, -0.03200735, 0.02778932, -0.12134804, -0.17949526, 0.07373594, -0.09398605, -0.14428353, 0.09787036, -0.10615763, 0.01655972, 0.03411977, -0.08756791, 0.03177790, -0.07446916, 0.03927751, 0.04662003, -0.13477539, 0.01157646, 0.10517415, -0.01966270, -0.04065310, -0.09233253, -0.03744319, -0.03533591, -0.13990901, 0.05933930, -0.02282131, 0.00560023, -0.12852830, 0.01629815, -0.01491094, -0.18593486, -0.15447991, 0.11455848, 0.04852187, -0.03678901, -0.23357575, -0.05640759, 0.00657841, -0.30848148, -0.11637532, 0.04157929, 0.03975043, -0.10397527, -0.19738635, -0.07398862, -0.04510219, -0.01242001, -0.16535281, -0.01321044, -0.08674280, -0.15305234, -0.22610737, -0.02001411, -0.13053413, -0.00199672, -0.02815671, -0.04759217, 0.02548963, -0.06816479, -0.08604225, -0.22762799, -0.10858096, 0.01907437, 0.01660956, -0.05891339, -0.08362211, -0.00188182, -0.03000421, 0.01402263, 0.04264176, -0.01096135, 0.10656219, 0.09746972, -0.04170679, 0.09849139, 0.10627232, 0.08198085, 0.01010966, 0.02294133, 0.03230379, 0.10961456, -0.15168571, -0.03205280, 0.02475240, 0.03442747, 0.04868191, -0.08017656, -0.00690975, 0.07507208, -0.09159056, -0.16103916, 0.03561218, -0.06326061, -0.04758479, -0.03258774, -0.10121278, 0.24616176, 0.05419444, -0.11736980, -0.07957904, -0.03995821, -0.07771639, 0.02568471, -0.23364255, 0.18849584, 0.01506171, -0.16440597, -0.05883599, -0.08306108, -0.03365372, -0.05441085, -0.09479492, 0.07453989, 0.03451498, -0.10523923, -0.09008492, -0.04760209, -0.02013604, -0.11398751, -0.13433544, -0.04512221, -0.00042731, -0.12162311, -0.10094888, -0.12841129, -0.12374394, -0.13292481, -0.14691448, -0.08204453, -0.00865443, -0.02242135, -0.03553296, -0.00511259, -0.07328247, -0.09348325, -0.03438516, 0.00243984, -0.07944311, 0.00820805, -0.07476836, 0.03334585, -0.04241767, 0.07975001, 0.00878120, 0.06371741, -0.04548775, 0.00235095, -0.00881789, -0.02903686, 0.05325409, 0.01167516, -0.02123576, 0.02842294, 0.03775343, -0.08854863, -0.01678209, -0.04904953, 0.02315641, 0.03494174, -0.06024129, 0.08630501, 0.07711664, -0.08862406, 0.00033689, 0.01406300, -0.01873709, 0.09453794, -0.06797399, 0.03547700, 0.00489711, -0.04263445, 0.00457209, 0.02119800, 0.03308290, 0.01910087, -0.04363929, 0.07914582, 0.04117360, -0.09668249, -0.06840491, -0.04072398, -0.06383902, -0.06992070, -0.02127112, 0.08824766, 0.09267887, -0.09252945, -0.09253766, -0.01576758, -0.11580733, 0.02881374, -0.09819515, 0.06146836, 0.05941192, -0.09530398, -0.15585773, -0.05831396, -0.13758494, -0.10131784, -0.14132312, 0.12667876, 0.05181422, -0.11789738, 0.00904677, -0.03153415, -0.07803448, -0.12125488, -0.03765677, -0.00538543, 0.06611155, -0.01841703, 0.00241003, -0.04478364, -0.10323427, -0.20756352, -0.07954220, -0.05335408, 0.02745368, -0.03521574, -0.00770849, -0.04096195, -0.06621171, -0.13673639, -0.02822303, -0.13337485, -0.02949799, 0.06451034, 0.02259463, -0.05480215, -0.05535991, -0.08289808, -0.00689626, -0.05850463, 0.01271640, 0.16852798, -0.00714835, 0.02703409, 0.01122844, -0.06109297, 0.00204222, -0.01867135, 0.04184569, 0.02593401, 0.05656118, 0.01624355, -0.00191319, -0.09830040, 0.08385943, -0.02999121, -0.05200651, -0.00746361, -0.05977517, 0.07687405, 0.05504239, 0.03321349, 0.06737409, 0.06225584, 0.00017874, 0.05693239, -0.00447787, -0.02485486, 0.07359121, 0.03730544, 0.03058340, 0.18873860, 0.04884478, -0.02092236, -0.00938166, -0.00703672, -0.00052580, 0.02579502, -0.03775093, 0.12394063, 0.16595310, -0.06516599, -0.03149557, 0.01711215, 0.02792389, -0.00768583, -0.06960075, 0.14211071, 0.13489188, -0.00721313, -0.10114614, 0.02369120, -0.00048831, -0.09105813, -0.06369139, 0.19244269, 0.06738210, 0.00369819, -0.20073855, -0.03283027, -0.05626089, -0.09013693, -0.05772084, 0.12105618, 0.10338750, 0.05724168, 0.00553879, 0.05435571, 0.00686700, -0.17702173, 0.02038726, -0.03649054, 0.10963574, 0.06412663, 0.02908863, -0.00979436, 0.01126727, -0.11505425, 0.16670147, -0.03926297, 0.10138188, 0.09111030, 0.02401619, 0.09958473, 0.05519066, -0.00411078, 0.09297877, -0.04252132, 0.06384901, 0.11478446, 0.04556846, 0.05458238, 0.05778482, -0.03246354, 0.15705024, -0.04602613, 0.14889784, 0.25836697, 0.00011126, 0.21606947, 0.08284305, -0.09535757, 0.17627670, -0.07226867, 0.02890054, 0.16561098, 0.07904427, 0.03232881, 0.17253172
 
-# DENSE_WEIGHTS END norm_loop
-
-# 10 Dense biases input_matrix
 
 .global bias
 
-## DENSE_BIAS BEGIN
+
 dense_bias:
-    .float -0.041667, 0.033751, 0.030045, 0.006700, -0.050259, 0.085334, -0.033102, 0.026402, -0.079888, 0.002525  # dense_bias[0:10]
-## DENSE_BIAS END
+    .float -0.03106286, 0.03705791, 0.02269139, -0.03029724, -0.06035529, 0.07614812, -0.01340246, 0.00783046, -0.04537206, 0.00310953  # dense_bias[0:10]
 
-.global weights_size
-Dense_weights_size: .word 11520
-.global biases_size
-Dense_biases_size: .word 10
 
-soft_test: .float -5.825374, -9.887916, -2.302836, 1.209780, -7.803916, -3.275545, -19.105032, 10.612792, -6.254661, -0.177880
-
-neg_threshold: .float -10.0      # Threshold for setting exp to 0
+neg_thres: .float -10.0      # Threshold for setting exp to 0
 
 # ## Convolutional Layer Filters
 .global conv_filters
 
-## FILTER BEGIN
-# 5x5x1x8 Convolution Filter Weights
+
 conv_filters:
-# Filter 1 Weights:
-    .float 0.300339, 0.227408, -0.236021, -0.446589, -0.396676
-    .float 0.401512, 0.174840, -0.068394, -0.537320, -0.266781
-    .float 0.344698, 0.308167, 0.042030, -0.603082, -0.376260
-    .float 0.400408, 0.479303, 0.147943, -0.377725, -0.361802
-    .float 0.131693, 0.429212, 0.314070, 0.053970, -0.165925
-# Filter 2 Weights:
-    .float -0.248271, -0.452428, -0.380840, -0.325791, -0.150723
-    .float 0.140508, -0.198228, -0.150268, -0.077117, -0.039421
-    .float 0.127301, 0.338143, 0.131038, 0.197601, 0.030741
-    .float 0.310692, 0.271372, 0.265915, 0.208181, 0.167045
-    .float 0.058608, -0.046019, 0.176440, 0.069233, 0.140819
-# Filter 3 Weights:
-    .float -0.290180, -0.464000, -0.378948, -0.119563, -0.204608
-    .float -0.506382, -0.345332, -0.378812, -0.134977, -0.211963
-    .float -0.015084, 0.153549, -0.040216, -0.148484, -0.152374
-    .float 0.482564, 0.331063, 0.253583, 0.265747, 0.301826
-    .float 0.211166, 0.281555, 0.228046, 0.297610, 0.016170
-# Filter 4 Weights:
-    .float -0.149720, 0.026225, -0.023406, 0.158984, 0.155360
-    .float -0.112656, -0.262022, -0.086311, 0.014723, 0.215976
-    .float -0.391579, -0.311004, 0.037853, 0.359984, 0.308057
-    .float -0.467311, -0.049964, 0.281449, 0.355260, 0.053169
-    .float 0.061342, 0.379726, 0.333479, 0.053468, -0.199379
-# Filter 5 Weights:
-    .float 0.019169, 0.267373, 0.069999, -0.142359, -0.304575
-    .float 0.086512, 0.308514, 0.079640, -0.218450, -0.588875
-    .float 0.001121, -0.040538, -0.044429, -0.159208, -0.197143
-    .float -0.019575, -0.153058, 0.243038, 0.390175, 0.339090
-    .float 0.135671, -0.082696, 0.098810, 0.432103, 0.124045
-# Filter 6 Weights:
-    .float -0.009802, 0.125539, 0.223976, 0.025631, 0.026455
-    .float 0.105429, 0.230694, 0.323925, 0.316107, 0.145338
-    .float 0.062867, 0.222572, 0.066369, 0.033060, 0.046972
-    .float 0.059091, -0.284220, -0.014942, 0.086095, 0.204017
-    .float -0.722000, -0.537082, -0.376672, -0.030316, -0.086823
-# Filter 7 Weights:
-    .float -0.389260, -0.460942, -0.696670, 0.088243, 0.236628
-    .float -0.574489, -0.605922, -0.197509, 0.192607, 0.465190
-    .float -0.632420, -0.374857, 0.159006, 0.381875, 0.351684
-    .float -0.628080, -0.273170, 0.266438, 0.410701, 0.178492
-    .float -0.653007, -0.030996, 0.418446, 0.247709, 0.187084
-# Filter 8 Weights:
-    .float 0.113788, 0.076092, 0.235073, 0.074814, 0.076887
-    .float 0.029188, -0.086627, 0.181658, 0.056439, -0.146885
-    .float 0.098740, 0.141947, 0.158142, -0.037740, 0.159212
-    .float 0.105803, 0.099431, 0.050659, -0.066341, -0.088222
-    .float 0.052213, 0.063916, 0.257254, 0.028423, 0.068510
+filters:
+    .float 0.35365000, -0.25632870, -0.44216833, 0.15843540, 0.09459874
+    .float -0.54049528, -0.53184646, 0.03936517, 0.22009230, 0.37529960
+    .float -0.35489005, 0.16881239, 0.40112746, 0.17117818, 0.06382002
+    .float 0.15382232, 0.29604542, 0.19350106, 0.09646993, -0.35931459
+    .float 0.21975663, 0.19576961, -0.10448381, -0.33259654, -0.34001398
+
+    .float 0.08571938, 0.05246818, -0.13640058, -0.30890834, -0.36421886
+    .float 0.06875563, 0.19719137, 0.11737578, 0.13695860, -0.21291991
+    .float 0.21034351, 0.21524154, 0.37388074, 0.27672431, 0.17929377
+    .float -0.18414134, -0.05535920, 0.13654919, 0.15569174, 0.04428325
+    .float -0.26554105, -0.37985030, -0.30674666, -0.06591699, 0.15563157
+
+    .float -0.47668391, -0.68407094, -0.70520109, -0.67043883, -0.46325693
+    .float -0.72809625, -0.43222347, -0.49419975, -0.20195770, 0.06970464
+    .float -0.70800102, -0.18568230, 0.10436120, 0.14102277, 0.26564130
+    .float -0.32397175, 0.24313423, 0.43465859, 0.32206115, 0.22685176
+    .float 0.00072064, 0.22624791, 0.38215321, 0.27373978, 0.38310599
+
+    .float 0.40437764, 0.33044094, 0.03563903, -0.31558770, -0.67343509
+    .float 0.29323167, 0.44412926, 0.12348457, -0.46441600, -0.72814035
+    .float 0.32780445, 0.55394143, -0.00372886, -0.63345051, -0.58525175
+    .float 0.50805616, 0.35701025, -0.22724269, -0.44985130, -0.51506984
+    .float 0.49758628, 0.26255652, -0.46577427, -0.67713857, -0.07636263
+
+    .float -0.06677402, 0.28758940, -0.03167812, 0.12183458, 0.16945498
+    .float 0.17899673, -0.06593972, 0.15439457, 0.20059849, 0.25264758
+    .float -0.03822786, 0.10297344, 0.25269485, 0.23477674, 0.24010961
+    .float 0.21410686, 0.17173386, -0.00920129, 0.03571059, 0.17112833
+    .float 0.23710646, 0.04126829, 0.01437632, -0.06402557, -0.16725379
+
+    .float 0.24873076, 0.36437228, 0.46133071, 0.13680366, -0.03131076
+    .float -0.02074433, 0.18580025, 0.49284437, 0.43374825, 0.28763518
+    .float -0.53097165, -0.25913554, 0.25136501, 0.22662309, 0.08513539
+    .float -0.55595225, -0.40321118, -0.33037508, -0.06057755, -0.04403410
+    .float -0.46095756, -0.44417024, -0.10690765, -0.11406448, 0.02481145
+
+    .float 0.20681159, 0.07821785, 0.19547315, -0.11196055, -0.03033486
+    .float 0.04702268, 0.16883086, 0.00807513, 0.05254307, -0.05307937
+    .float 0.18144301, 0.20721419, 0.05342988, -0.08593198, -0.13714716
+    .float 0.21955657, 0.01897647, 0.07796083, 0.13668203, 0.22695531
+    .float 0.22727366, 0.02078438, -0.06539664, 0.10971940, 0.20793316
+
+    .float -0.13139348, 0.14177722, 0.00198559, 0.23046632, 0.11296314
+    .float -0.09989197, 0.16594028, 0.12997375, 0.17657888, -0.11027593
+    .float 0.11890251, -0.05423643, -0.08952732, 0.10709745, -0.02722906
+    .float -0.15112159, -0.13366716, 0.19311699, 0.30353940, 0.27984601
+    .float -0.03344458, 0.19415346, -0.04058857, -0.02419681, 0.16725861
 
 # FILTER END
 
@@ -2687,68 +882,40 @@ conv_filters:
 
 ## FILTER_BIAS BEGIN
 filter_bias:
-    .float 0.046092, 0.116175, 0.081196, -0.008723, -0.001550, 0.000569, 0.138644, -0.060249  # filter_bias[0:8] 
+    .float -0.00493938, -0.01209035, 0.15486301, 0.07827792, -0.02660563, -0.00411384, -0.08101545, -0.00514472  # filter_bias[0:8]
 ## FILTER_BIAS END
 
-.global conv_filters_size
-conv_filters_size: .word 200
-.global conv_biases_size
-conv_biases_size: .word 8
-
-# .global constants
-# #Constants
-# constants:
-#     .float 1.0, 2.0, 6.0, 24.0, 120.0, 720.0, 5040.0, 40320.0, 362880.0, 3628800.0  # 1! to 10!
-#     .float 39916800.0, 479001600.0, 6227020800.0, 87178291200.0, 1307674368000.0    # 11! to 15!
-#     .float 20922789888000.0, 355687428096000.0, 6402373705728000.0                  # 16! to 18!
-#     .float 121645100408832000.0, 2432902008176640000.0                              # 19! to 20!
-#     .float 51090942171709440000.0, 1.1240007277776077e21, 2.585201673888498e22      # 21! to 23!
-#     .float 6.204484017332394e23, 1.5511210043330986e25, 4.0329146112660565e26       # 24! to 26!
-#     .float 1.0888869450418352e28, 3.0488834461171384e29, 8.841761993739701e30       # 27! to 29!
-#     .float 2.6525285981219103e32, 8.222838654177922e33, 2.631308369336935e35        # 30! to 32!
-#     .float 8.683317618811886e36, 2.9523279903960412e38, 1.0333147966386144e40       # 33! to 35!
-#     .float 3.719933267899012e41, 1.3763753091226343e43, 5.23022617466601e44         # 36! to 38!
-#     .float 2.0397882081197442e46, 8.159152832478977e47, 3.3452526613163803e49       # 39! to 41!
-#     .float 1.4050061177528798e51, 6.041526306337383e52, 2.6582715747884485e54       # 42! to 44!
-#     .float 1.1962222086548019e56, 5.5026221598120885e57, 2.5862324151116818e59      # 45! to 47!
-#     .float 1.2413915592536073e61, 6.082818640342675e62, 3.0414093201713376e64       # 48! to 50!
-# .global constant_sizes
-# constant_sizes: .word 50
-## INPUTS BEGIN conv_output
 .section .data
 .global input_image
 
-input_matrix:
-# Image is Scaled between 0 and 255
+input_mnist:
 
 ## INPUT_MATRIX BEGIN
     .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
     .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
     .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.047059, 0.160784, 0.572549, 0.572549, 0.188235, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.047059, 0.505882, 0.992157, 0.992157, 0.992157, 0.980392, 0.639216, 0.070588, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.521569, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.898039, 0.274510, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.396078, 0.992157, 0.988235, 0.568627, 0.400000, 0.419608, 0.929412, 0.992157, 0.968627, 0.501961, 0.039216, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.709804, 0.992157, 0.654902, 0.000000, 0.000000, 0.000000, 0.239216, 0.921569, 0.992157, 0.992157, 0.639216, 0.019608, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 1.000000, 0.992157, 0.168627, 0.000000, 0.000000, 0.000000, 0.000000, 0.227451, 0.756863, 0.992157, 0.992157, 0.643137, 0.015686, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.733333, 0.992157, 0.125490, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.215686, 0.925490, 0.992157, 0.992157, 0.337255, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.572549, 0.992157, 0.125490, 0.000000, 0.392157, 0.745098, 0.341176, 0.341176, 0.341176, 0.576471, 0.992157, 0.992157, 0.482353, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.368627, 0.992157, 0.305882, 0.156863, 0.972549, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.874510, 0.329412, 0.058824, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.054902, 0.360784, 0.047059, 0.137255, 0.941176, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.956863, 0.349020, 0.039216, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.294118, 0.631373, 0.701961, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.819608, 0.168627, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.011765, 0.062745, 0.062745, 0.152941, 0.149020, 0.062745, 0.062745, 0.568627, 0.952941, 0.992157, 0.992157, 0.725490, 0.188235, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.078431, 0.227451, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.227451, 0.819608, 0.992157, 0.992157, 0.717647, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.301961, 0.866667, 0.968627, 0.309804, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.050980, 0.858824, 0.992157, 0.941176, 0.282353, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.352941, 0.968627, 0.992157, 0.988235, 0.223529, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.207843, 0.984314, 0.992157, 0.749020, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.454902, 0.992157, 0.992157, 0.231373, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.388235, 0.988235, 0.992157, 0.568627, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.054902, 0.737255, 0.992157, 0.866667, 0.619608, 0.149020, 0.000000, 0.000000, 0.000000, 0.000000, 0.435294, 0.827451, 0.964706, 0.992157, 0.992157, 0.568627, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.047059, 0.866667, 0.964706, 0.992157, 0.984314, 0.976471, 0.976471, 0.976471, 0.976471, 0.992157, 0.992157, 0.992157, 0.992157, 0.784314, 0.074510, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.372549, 0.717647, 0.894118, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.764706, 0.486275, 0.090196, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.094118, 0.145098, 0.541176, 0.290196, 0.494118, 0.345098, 0.145098, 0.027451, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.454902, 0.490196, 0.670588, 1.000000, 1.000000, 0.588235, 0.364706, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.662745, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.854902, 0.117647, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.662745, 0.992157, 0.992157, 0.992157, 0.835294, 0.556863, 0.690196, 0.992157, 0.992157, 0.478431, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.203922, 0.980392, 0.992157, 0.823529, 0.125490, 0.047059, 0.000000, 0.023529, 0.807843, 0.992157, 0.549020, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.301961, 0.984314, 0.823529, 0.098039, 0.000000, 0.000000, 0.000000, 0.478431, 0.972549, 0.992157, 0.254902, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.121569, 0.070588, 0.000000, 0.000000, 0.000000, 0.000000, 0.819608, 0.992157, 0.992157, 0.254902, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.458824, 0.968627, 0.992157, 0.776471, 0.039216, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.298039, 0.968627, 0.992157, 0.905882, 0.247059, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.501961, 0.992157, 0.992157, 0.564706, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.690196, 0.964706, 0.992157, 0.623529, 0.047059, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.098039, 0.917647, 0.992157, 0.913725, 0.137255, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.776471, 0.992157, 0.992157, 0.552941, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.305882, 0.972549, 0.992157, 0.741176, 0.047059, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.074510, 0.784314, 0.992157, 0.992157, 0.552941, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.525490, 0.992157, 0.992157, 0.678431, 0.047059, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.972549, 0.992157, 0.992157, 0.098039, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.972549, 0.992157, 0.992157, 0.168627, 0.078431, 0.078431, 0.078431, 0.078431, 0.019608, 0.000000, 0.019608, 0.078431, 0.078431, 0.145098, 0.588235, 0.588235, 0.588235, 0.576471, 0.039216, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.972549, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.658824, 0.560784, 0.650980, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.482353, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.682353, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.992157, 0.976471, 0.968627, 0.968627, 0.662745, 0.458824, 0.458824, 0.223529, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.462745, 0.482353, 0.482353, 0.482353, 0.650980, 0.992157, 0.992157, 0.992157, 0.607843, 0.482353, 0.482353, 0.160784, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
     .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
     .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
     .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
-# ## INPUT_MATRIX END
-
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
+    .float 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000, 0.000000
