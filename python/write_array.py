@@ -6,7 +6,7 @@ import os
 import struct
 from sklearn.model_selection import train_test_split
 
-# Function to generate a random matrix
+# Function to generate a random matrix.
 def generate_matrix(size):
     """Generates a square matrix of given size with random floats between -1000 and 1000, rounded to 0.25 increments."""
     matrix = [[round(random.uniform(-1000, 1000) * 4) / 4 for _ in range(size)] for _ in range(size)]
