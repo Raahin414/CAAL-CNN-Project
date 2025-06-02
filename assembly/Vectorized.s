@@ -7,144 +7,135 @@
 
 _start:
 main:
-    # ----------------------------
-    # Prologue - Save callee-saved registers
-    # ----------------------------
-    addi sp, sp, -32
-    sw   ra, 28(sp)
-    sw   s0, 24(sp)
-    sw   s1, 20(sp)
-    sw   s2, 16(sp)
-    sw   s3, 12(sp)
-    sw   s4, 8(sp)
-    sw   s5, 4(sp)
-    sw   s6, 0(sp)
+# ----------------------------
+# Prologue - Save callee-saved registers
+# ----------------------------
+addi sp, sp, -32
+sw ra, 28(sp)
+sw s0, 24(sp)
+sw s1, 20(sp)
+sw s2, 16(sp)
+sw s3, 12(sp)
+sw s4, 8(sp)
+sw s5, 4(sp)
+sw s6, 0(sp)
 
-    # Load base addresses into argument registers
-    la a0, input_mnist         # a0 = input matrix (28x28)
-    la a1, conv_filters         # a1 = filters [8][5][5]
-    la a2, filter_bias          # a2 = biases [8]
-    la a3, conv_output          # a3 = output [8][24][24]
+# Load base addresses into argument registers
+la a0, input_mnist  # a0 = input matrix (28x28)
+la a1, conv_filters # a1 = filters [8][5][5]
+la a2, filter_bias  # a2 = biases [8]
+la a3, conv_output  # a3 = output [8][24][24]
 
-Convolution:
-    li t0, 0                    # t0 = filter_index (0–7)
+# Initialize filter loop counter
+li t0, 0          # t0 = filter_index (0-7)
 
+# Constants used throughout the code
+li s0, 28         # s0 = input image width
+li s1, 24         # s1 = output feature map dimension
+li s6, 16         # s6 = Max valid out_x start for 8-wide vector
+
+# Main filter processing loop
 filter_loop:
-    # ----------------------------
     # Load bias for current filter
-    # ----------------------------
     slli s10, t0, 2
     add s10, a2, s10
-    flw ft3, 0(s10)             # ft3 = bias[filter_index]
-
-    li t1, 0                    # t1 = out_y (output row)
-    li s0, 28                   # s0 = input image width
-    li s1, 24                   # s1 = output feature map dimension
-
+    flw ft3, 0(s10)    # ft3 = bias[filter_index]
+    
+    # Initialize output row counter
+    li t1, 0           # t1 = out_y (output row)
+    
     # Configure vector unit: 8-element vectors, 32-bit floats
     li t3, 8
     vsetvli t3, t3, e32, m1
-
-out_row_loop:
-    li t2, 0                    # t2 = out_x (output col)
-
-out_col_loop:
-    # ----------------------------
-    # Initialize accumulator with bias
-    # ----------------------------
-    vfmv.v.f v4, ft3            # v4 = [bias, bias, ..., bias]
-
-    li s10, 0                   # s10 = ky (filter row)
-
-filter_row_loop:
-    li s11, 0                   # s11 = kx (filter col)
-
-filter_col_loop:
-    # ----------------------------
-    # Load filter weight: filters[filter][ky][kx]
-    # ----------------------------
-    li s4, 25                   # 5x5 = 25 weights per filter
-    mul s5, t0, s4              # filter_index * 25
-    li s6, 5
-    mul s7, s10, s6
-    add s5, s5, s7
-    add s5, s5, s11
-    slli s5, s5, 2
-    add s6, a1, s5
-    flw ft1, 0(s6)
-
-    # ----------------------------
-    # Load input patch vector: input[out_y+ky][out_x+kx : out_x+kx+7]
-    # ----------------------------
-    add a4, t1, s10             # a4 = input_y = out_y + ky
-    add a5, t2, s11             # a5 = input_x = out_x + kx
-    li s2, 28
-    mul s3, a4, s2              # input_y * 28
-    add s3, s3, a5
-    slli s3, s3, 2              # Convert to byte offset
-    add s7, a0, s3
-    vle32.v v5, (s7)
-
-    # ----------------------------
-    # Vector Multiply-Accumulate: acc += input * filter_weight
-    # ----------------------------
-    vfmv.v.f v6, ft1
-    vfmacc.vv v4, v5, v6
-
-    addi s11, s11, 1
-    li s8, 5
-    blt s11, s8, filter_col_loop
-
-    addi s10, s10, 1
-    blt s10, s8, filter_row_loop
-
-    # ----------------------------
-    # Store result in output[filter][out_y][out_x]
-    # ----------------------------
-    li s4, 576                  # 24x24 outputs per filter
-    mul s5, t0, s4
-    mul s6, t1, s1
-    add s6, s6, t2
-    add s5, s5, s6
-    slli s5, s5, 2
-    add s7, a3, s5
-    vse32.v v4, (s7)
-
-    # ----------------------------
-    # Advance to next output column (stride = 1, vector step = 8)
-    # ----------------------------
-    addi t2, t2, 8
-    li s9, 16                   # Max valid out_x start for 8-wide vector
-    ble t2, s9, out_col_loop
-
-    # Optional: handle tail values (out_x = 17–23) if needed
-    bge t2, s1, end_out_row
-
-    # Re-init accumulator if needed for tail logic
-    # vfmv.v.f v4, ft3
-
-end_out_row:
-    addi t1, t1, 1
-    blt t1, s1, out_row_loop
-
+    
+    out_row_loop:
+        # Initialize output column counter
+        li t2, 0       # t2 = out_x (output col)
+        
+        out_col_loop:
+            # Initialize accumulator with bias
+            vfmv.v.f v4, ft3  # v4 = [bias, bias, ..., bias]
+            
+            # Initialize filter row counter
+            li s10, 0         # s10 = ky (filter row)
+            
+            filter_row_loop:
+                # Initialize filter column counter
+                li s11, 0      # s11 = kx (filter col)
+                
+                filter_col_loop:
+                    # Load filter weight: filters[filter][ky][kx]
+                    li s4, 25           # 5x5 = 25 weights per filter
+                    mul s5, t0, s4      # filter_index * 25
+                    li s7, 5            # filter dimension
+                    mul s8, s10, s7     # ky * 5
+                    add s5, s5, s8
+                    add s5, s5, s11
+                    slli s5, s5, 2
+                    add s6, a1, s5
+                    flw ft1, 0(s6)
+                    
+                    # Load input patch vector: input[out_y+ky][out_x+kx : out_x+kx+7]
+                    add a4, t1, s10      # a4 = input_y = out_y + ky
+                    add a5, t2, s11      # a5 = input_x = out_x + kx
+                    mul s3, a4, s0       # input_y * 28
+                    add s3, s3, a5
+                    slli s3, s3, 2       # Convert to byte offset
+                    add s7, a0, s3
+                    vle32.v v5, (s7)
+                    
+                    # Vector Multiply-Accumulate: acc += input * filter_weight
+                    vfmv.v.f v6, ft1
+                    vfmacc.vv v4, v5, v6
+                    
+                    # Increment filter column counter
+                    addi s11, s11, 1
+                    li s8, 5
+                    blt s11, s8, filter_col_loop
+                
+                # Increment filter row counter
+                addi s10, s10, 1
+                li s8, 5
+                blt s10, s8, filter_row_loop
+            
+            # Store result in output[filter][out_y][out_x]
+            li s4, 576           # 24x24 outputs per filter
+            mul s5, t0, s4       # filter_index * (24*24)
+            mul s6, t1, s1       # out_y * 24
+            add s6, s6, t2
+            add s5, s5, s6
+            slli s5, s5, 2
+            add s7, a3, s5
+            vse32.v v4, (s7)
+            
+            # Advance to next output column (stride = 1, vector step = 8)
+            addi t2, t2, 8
+            li s9, 16            # Max valid out_x start for 8-wide vector
+            ble t2, s9, out_col_loop
+            
+            # Skip handling tail values (just advance to next row)
+            
+        # Increment output row counter
+        addi t1, t1, 1
+        blt t1, s1, out_row_loop
+    
+    # Increment filter counter
     addi t0, t0, 1
-    li s9, 8
+    li s9, 8                 # Number of filters
     blt t0, s9, filter_loop
 
-end:
-    # ----------------------------
-    # Epilogue - Restore registers
-    # ----------------------------
-    lw s6, 0(sp)
-    lw s5, 4(sp)
-    lw s4, 8(sp)
-    lw s3, 12(sp)
-    lw s2, 16(sp)
-    lw s1, 20(sp)
-    lw s0, 24(sp)
-    lw ra, 28(sp)
-    addi sp, sp, 32
-
+# ----------------------------
+# Epilogue - Restore registers
+# ----------------------------
+lw s6, 0(sp)
+lw s5, 4(sp)
+lw s4, 8(sp)
+lw s3, 12(sp)
+lw s2, 16(sp)
+lw s1, 20(sp)
+lw s0, 24(sp)
+lw ra, 28(sp)
+addi sp, sp, 32
 #ReLU Main Function
 
 la a0, conv_output
