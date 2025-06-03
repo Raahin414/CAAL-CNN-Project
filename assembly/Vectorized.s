@@ -559,164 +559,179 @@ series_iteration:
     
     ret                     # Return with result in fa0
 # ------------------------------------------------------------------------------
-# Softmax Function (This is the subroutine)
+# Softmax Function (Vectorized)
 # Inputs:
-#   a0 = address of input array
-#   a1 = address of output array
-#   a2 = number of elements in array
+#   a0 = input array pointer
+#   a1 = output array pointer
+#   a2 = number of elements
 softmax:
-    # Save registers to stack
-    addi sp, sp, -64
-    sw ra, 0(sp)            # Return address
-    sw s3, 4(sp)            # Saved register for input array
-    sw s4, 8(sp)            # Saved register for output array
-    sw s5, 12(sp)           # Saved register for element count
-    fsw fs6, 16(sp)         # Will hold max value
-    fsw fs7, 20(sp)         # Will hold sum of exponentials
-    fsw fs8, 24(sp)         # Temporary
-    fsw fs9, 28(sp)         # Temporary
-    fsw fs10, 32(sp)        # Temporary
-    fsw fs11, 36(sp)        # Holds threshold value (-10.0)
-    sw t3, 40(sp)           # Loop counter
-    sw t4, 44(sp)           # Temporary address calculation
-    sw t5, 48(sp)           # Temporary comparison
-   
-    # Initialize pointers and counters
-    mv s3, a0               # s3 = input array pointer
-    mv s4, a1               # s4 = output array pointer
-    mv s5, a2               # s5 = number of elements
-   
-    # --------------------------------------------------------------------------
-    # Step 1: Find maximum value in input array (for numerical stability)
-    li t3, 0                # Initialize index counter
-    vsetvli t0, s5, e32
-    addi t3, t3, 1          # Increment counter (start from second element)
-   
-find_max:
-    bge t3, s5, max_found   # Exit loop if we've checked all elements
-   
-    # Calculate address of current element
-    slli t4, t3, 2          # t4 = t3 * 4 (byte offset)
-    add t4, s3, t4          # t4 = address of current element
-    vle32.v v0, (s3)
-    # Compare with current max
-    #flt.s t5, fs6, ft0      # t5 = 1 if current max < current element
-    vfredmax.vs v1, v0, v0
-    beqz t5, next_max_iter  # If not greater, continue loop
-    vfmv.f.s fs6, v1
-   
-next_max_iter:
-    addi t3, t3, 1          # Increment counter
-    j find_max              # Repeat
-   
-max_found:
-    # --------------------------------------------------------------------------
-    # Step 2: Compute exponentials of (input - max) and their sum
-    li t6, 0
-    fcvt.s.w fs7, t6        # fs7 = 0.0 (initialize sum)
-   
-    # Load threshold for numerical stability (elements < max-10 are treated as 0)
-    la t4, neg_thres
-    flw fs11, 0(t4)         # fs11 = -10.0
-   
-    li t3, 0                # Reset index counter
-   
-compute_exp:
-    bge t3, s5, exp_complete # Exit when all elements processed
-   
-    # Get current input value
-    slli t4, t3, 2          # Calculate byte offset
-    add t4, s3, t4          # Get element address
-    flw ft0, 0(t4)          # ft0 = input[t3]
-   
-   
-   
-    # Subtract max for numerical stability
-    fsub.s fa0, ft0, fs6    # fa0 = input[t3] - max
-   
-   
-    # Check if value is below threshold (for numerical stability)
-    flt.s t5, fa0, fs11     # t5 = 1 if (input[t3]-max) < -10
-     
-   
-    beqz t5, do_exp         # If above threshold, calculate exp
-   
-    # If below threshold, treat as 0 to avoid underflow
-    fcvt.s.w fa0, t6        # fa0 = 0.0
-    j save_exp
-   
-do_exp:
-    # Save important registers before function call
-    sw t3, 52(sp)           # Save loop counter
-    sw t4, 56(sp)           # Save address temporary
-    fsw fs7, 60(sp)         # Save sum
-   
-    # Calculate exp(input[t3] - max)
-    jal ra, exp_approx      # Result returned in fa0
-   
-    # Restore important registers after function call
-    lw t3, 52(sp)
-    lw t4, 56(sp)
-    flw fs7, 60(sp)
-   
-save_exp:
-    # Store exp result in output array
-    slli t4, t3, 2          # Calculate byte offset
-    add t4, s4, t4          # Get output address
-    fsw fa0, 0(t4)          # Store exp result
-   
-    # Add to running sum
-    fadd.s fs7, fs7, fa0    # sum += exp_result
-   
-   
-    addi t3, t3, 1          # Increment counter
-    j compute_exp           # Repeat
-   
-exp_complete:
-    # --------------------------------------------------------------------------
-    # Step 3: Normalize by sum to get probabilities
-    li t3, 0                # Reset index counter
-   
-compute_probs:
-    bge t3, s5, probs_done  # Exit when all elements processed
-   
-    # Get current exp value
-    slli t4, t3, 2          # Calculate byte offset
-    add t4, s4, t4          # Get element address
-    flw ft0, 0(t4)          # ft0 = exp(input[t3]-max)
-   
-   
-   
-    # Divide by sum to get probability
-    fdiv.s ft0, ft0, fs7    # ft0 = exp / sum
-   
-   
-    # Store final probability
-    fsw ft0, 0(t4)
-   
-   
-    addi t3, t3, 1          # Increment counter
-    j compute_probs         # Repeat
-   
-probs_done:
-    # Restore all saved registers
-    lw ra, 0(sp)
-    lw s3, 4(sp)
-    lw s4, 8(sp)
-    lw s5, 12(sp)
-    flw fs6, 16(sp)
-    flw fs7, 20(sp)
-    flw fs8, 24(sp)
-    flw fs9, 28(sp)
-    flw fs10, 32(sp)
-    flw fs11, 36(sp)
-    lw t3, 40(sp)
-    lw t4, 44(sp)
-    lw t5, 48(sp)
-    addi sp, sp, 64
-   
-    ret                     # Return to caller
+    addi sp, sp, -84
+    sw ra, 0(sp)
+    sw s2, 4(sp)     # saved reg s2
+    sw s3, 8(sp)     # saved reg s3
+    sw s4, 12(sp)    # saved reg s4
+    sw s5, 16(sp)    # saved reg s5 (element count)
+    fsw fs6, 20(sp)  # saved max value
+    fsw fs7, 24(sp)  # saved sum of exponentials
+    fsw fs8, 28(sp)  # temporary float
+    fsw fs9, 32(sp)  # temporary float
+    fsw fs10, 36(sp) # temporary float
+    fsw fs11, 40(sp) # threshold (-10.0)
+    sw t0, 44(sp)    # saved t0
+    sw t1, 48(sp)    # saved t1
+    sw t2, 52(sp)    # saved t2
+    sw t3, 56(sp)    # saved t3
+    sw t4, 60(sp)    # saved t4
+    sw t5, 64(sp)    # saved t5
+    sw t6, 68(sp)    # saved t6
 
+    addi s2, a0, 0    # input pointer
+    addi s3, a1, 0    # output pointer
+    addi s5, a2, 0    # number of elements
+
+    la t0, neg_thres
+    flw fs11, 0(t0)   # load threshold = -10.0
+
+    # -------------------------
+    # Step 1: Find max (vectorized)
+    # -------------------------
+    addi t3, zero, 0     # index = 0
+    flw fs6, 0(s2)       # max = first element
+
+find_max_loop:
+    bge t3, s5, max_found
+
+    addi t4, s5, 0
+    sub t4, t4, t3
+    vsetvli t4, t4, e32, m1
+
+    slli t5, t3, 2
+    add t5, s2, t5
+    vle32.v v0, (t5)
+
+    vmv.v.x v1, zero
+    vfredmax.vs v1, v0, v1
+    vfmv.f.s ft0, v1
+    fmax.s fs6, fs6, ft0
+
+    add t3, t3, t4
+    j find_max_loop
+
+max_found:
+
+    # -------------------------
+    # Step 2: Compute exponentials (scalar exp approx)
+    # -------------------------
+    addi t3, zero, 0
+    fcvt.s.w fs7, zero    # sum = 0.0
+
+exp_loop:
+    bge t3, s5, exp_done
+
+    addi s4, t3, 0       # scalar output index
+
+    addi t4, s5, 0
+    sub t4, t4, t3
+    vsetvli t4, t4, e32, m1
+
+    slli t5, t3, 2
+    add t5, s2, t5
+    vle32.v v0, (t5)
+
+    vfmv.v.f v1, fs6
+    vfsub.vv v2, v0, v1
+
+    addi sp, sp, -32
+
+    addi t0, zero, 0     # scalar loop index
+
+scalar_exp_loop:
+    bge t0, t4, scalar_exp_done
+
+    vse32.v v2, (sp)
+
+    slli t1, t0, 2
+    add t2, sp, t1
+    flw ft0, 0(t2)
+
+    flt.s t5, ft0, fs11
+    beqz t5, do_exp_scalar
+
+    fcvt.s.w fa0, zero
+    j store_exp_scalar
+
+do_exp_scalar:
+    fmv.s fa0, ft0
+    jal ra, exp_approx
+
+store_exp_scalar:
+    slli t1, s4, 2
+    add t2, s3, t1
+    fsw fa0, 0(t2)
+
+    fadd.s fs7, fs7, fa0
+
+    addi s4, s4, 1
+    addi t0, t0, 1
+    j scalar_exp_loop
+
+scalar_exp_done:
+    addi sp, sp, 32
+
+    add t3, t3, t4
+    j exp_loop
+
+exp_done:
+
+    # -------------------------
+    # Step 3: Normalize (vectorized)
+    # -------------------------
+    addi t3, zero, 0
+
+normalize_loop:
+    bge t3, s5, done_norm
+
+    addi t4, s5, 0
+    sub t4, t4, t3
+    vsetvli t4, t4, e32, m1
+
+    slli t5, t3, 2
+    add t5, s3, t5
+    vle32.v v0, (t5)
+
+    vfmv.v.f v1, fs7
+    vfdiv.vv v2, v0, v1
+
+    vse32.v v2, (t5)
+
+    add t3, t3, t4
+    j normalize_loop
+
+done_norm:
+
+    # Restore saved registers
+    lw ra, 0(sp)
+    lw s2, 4(sp)
+    lw s3, 8(sp)
+    lw s4, 12(sp)
+    lw s5, 16(sp)
+    flw fs6, 20(sp)
+    flw fs7, 24(sp)
+    flw fs8, 28(sp)
+    flw fs9, 32(sp)
+    flw fs10, 36(sp)
+    flw fs11, 40(sp)
+    lw t0, 44(sp)
+    lw t1, 48(sp)
+    lw t2, 52(sp)
+    lw t3, 56(sp)
+    lw t4, 60(sp)
+    lw t5, 64(sp)
+    lw t6, 68(sp)
+    addi sp, sp, 84
+
+    ret
+    
 # ------------------------------------------------------------------------------
 # End of procedure - print results and exit
 _print_results:
