@@ -559,7 +559,7 @@ series_iteration:
     
     ret                     # Return with result in fa0
 # ------------------------------------------------------------------------------
-# Softmax Function
+# Softmax Function (This is the subroutine)
 # Inputs:
 #   a0 = address of input array
 #   a1 = address of output array
@@ -580,114 +580,124 @@ softmax:
     sw t3, 40(sp)           # Loop counter
     sw t4, 44(sp)           # Temporary address calculation
     sw t5, 48(sp)           # Temporary comparison
-    
+   
     # Initialize pointers and counters
     mv s3, a0               # s3 = input array pointer
     mv s4, a1               # s4 = output array pointer
     mv s5, a2               # s5 = number of elements
-    
+   
     # --------------------------------------------------------------------------
     # Step 1: Find maximum value in input array (for numerical stability)
     li t3, 0                # Initialize index counter
-    flw fs6, 0(s3)          # Initialize max with first element
+    vsetvli t0, s5, e32
     addi t3, t3, 1          # Increment counter (start from second element)
-    
+   
 find_max:
     bge t3, s5, max_found   # Exit loop if we've checked all elements
-    
+   
     # Calculate address of current element
     slli t4, t3, 2          # t4 = t3 * 4 (byte offset)
     add t4, s3, t4          # t4 = address of current element
-    flw ft0, 0(t4)          # ft0 = current element value
-    
+    vle32.v v0, (s3)
     # Compare with current max
-    flt.s t5, fs6, ft0      # t5 = 1 if current max < current element
+    #flt.s t5, fs6, ft0      # t5 = 1 if current max < current element
+    vfredmax.vs v1, v0, v0
     beqz t5, next_max_iter  # If not greater, continue loop
-    fmv.s fs6, ft0          # Otherwise update max value
-    
+    vfmv.f.s fs6, v1
+   
 next_max_iter:
     addi t3, t3, 1          # Increment counter
     j find_max              # Repeat
-    
+   
 max_found:
     # --------------------------------------------------------------------------
     # Step 2: Compute exponentials of (input - max) and their sum
     li t6, 0
     fcvt.s.w fs7, t6        # fs7 = 0.0 (initialize sum)
-    
+   
     # Load threshold for numerical stability (elements < max-10 are treated as 0)
     la t4, neg_thres
     flw fs11, 0(t4)         # fs11 = -10.0
-    
+   
     li t3, 0                # Reset index counter
-    
+   
 compute_exp:
     bge t3, s5, exp_complete # Exit when all elements processed
-    
+   
     # Get current input value
     slli t4, t3, 2          # Calculate byte offset
     add t4, s3, t4          # Get element address
     flw ft0, 0(t4)          # ft0 = input[t3]
-    
+   
+   
+   
     # Subtract max for numerical stability
     fsub.s fa0, ft0, fs6    # fa0 = input[t3] - max
-    
+   
+   
     # Check if value is below threshold (for numerical stability)
     flt.s t5, fa0, fs11     # t5 = 1 if (input[t3]-max) < -10
+     
+   
     beqz t5, do_exp         # If above threshold, calculate exp
-    
+   
     # If below threshold, treat as 0 to avoid underflow
     fcvt.s.w fa0, t6        # fa0 = 0.0
     j save_exp
-    
+   
 do_exp:
     # Save important registers before function call
     sw t3, 52(sp)           # Save loop counter
     sw t4, 56(sp)           # Save address temporary
     fsw fs7, 60(sp)         # Save sum
-    
+   
     # Calculate exp(input[t3] - max)
     jal ra, exp_approx      # Result returned in fa0
-    
+   
     # Restore important registers after function call
     lw t3, 52(sp)
     lw t4, 56(sp)
     flw fs7, 60(sp)
-    
+   
 save_exp:
     # Store exp result in output array
     slli t4, t3, 2          # Calculate byte offset
     add t4, s4, t4          # Get output address
     fsw fa0, 0(t4)          # Store exp result
-    
+   
     # Add to running sum
     fadd.s fs7, fs7, fa0    # sum += exp_result
-    
+   
+   
     addi t3, t3, 1          # Increment counter
     j compute_exp           # Repeat
-    
+   
 exp_complete:
     # --------------------------------------------------------------------------
     # Step 3: Normalize by sum to get probabilities
     li t3, 0                # Reset index counter
-    
+   
 compute_probs:
     bge t3, s5, probs_done  # Exit when all elements processed
-    
+   
     # Get current exp value
     slli t4, t3, 2          # Calculate byte offset
     add t4, s4, t4          # Get element address
     flw ft0, 0(t4)          # ft0 = exp(input[t3]-max)
-    
+   
+   
+   
     # Divide by sum to get probability
     fdiv.s ft0, ft0, fs7    # ft0 = exp / sum
-    
+   
+   
     # Store final probability
     fsw ft0, 0(t4)
-    
+   
+   
     addi t3, t3, 1          # Increment counter
     j compute_probs         # Repeat
-    
+   
 probs_done:
     # Restore all saved registers
     lw ra, 0(sp)
@@ -704,7 +714,7 @@ probs_done:
     lw t4, 44(sp)
     lw t5, 48(sp)
     addi sp, sp, 64
-    
+   
     ret                     # Return to caller
 
 # ------------------------------------------------------------------------------
