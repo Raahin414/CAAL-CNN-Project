@@ -209,6 +209,9 @@ vector_ops:
     fmax.s fa2, fa2, fa3
     fmax.s fa0, fa0, fa2
 
+    # fcvt.s.w fa4, zero      
+    # fmax.s fa0, fa0, fa4
+
     add a2, a5, s11            # Output address
     fsw fa0, 0(a2)
     addi s11, s11, 4
@@ -622,90 +625,93 @@ max_found:
     # -------------------------
     # Step 2: Compute exponentials (scalar exp approx)
     # -------------------------
-    addi t3, zero, 0
-    fcvt.s.w fs7, zero    # sum = 0.0
+
+    addi t3, zero, 0             # t3 = 0, index for outer loop over input vector
+    fcvt.s.w fs7, zero           # fs7 = 0.0, accumulator for sum of exponentials
 
 exp_loop:
-    bge t3, s5, exp_done
+    bge t3, s5, exp_done         # if t3 >= total elements, exit exponential computation loop
 
-    addi s4, t3, 0       # scalar output index
+    addi s4, t3, 0               # s4 = current scalar output index
 
-    addi t4, s5, 0
+    addi t4, s5, 0               # t4 = s5 - t3, number of elements remaining
     sub t4, t4, t3
-    vsetvli t4, t4, e32, m1
+    vsetvli t4, t4, e32, m1      # set vector length based on remaining elements
 
-    slli t5, t3, 2
-    add t5, s2, t5
-    vle32.v v0, (t5)
+    slli t5, t3, 2               # byte offset = t3 * 4 (float size)
+    add t5, s2, t5               # compute input address
+    vle32.v v0, (t5)             # load input[t3:t3+VLEN] into v0
 
-    vfmv.v.f v1, fs6
-    vfsub.vv v2, v0, v1
+    vfmv.v.f v1, fs6             # broadcast max value (fs6) to vector v1
+    vfsub.vv v2, v0, v1          # v2 = v0 - v1, subtract max from each input (numerical stability)
 
-    addi sp, sp, -32
+    addi sp, sp, -32             # reserve stack space to store temporary values
 
-    addi t0, zero, 0     # scalar loop index
+    addi t0, zero, 0             # t0 = 0, index for scalar loop inside vector chunk
 
 scalar_exp_loop:
-    bge t0, t4, scalar_exp_done
+    bge t0, t4, scalar_exp_done  # if all elements in current chunk processed, exit loop
 
-    vse32.v v2, (sp)
+    vse32.v v2, (sp)             # store v2 (vector of shifted values) on stack
 
-    slli t1, t0, 2
-    add t2, sp, t1
-    flw ft0, 0(t2)
+    slli t1, t0, 2               # compute byte offset for current scalar element
+    add t2, sp, t1               # t2 = address of current element
+    flw ft0, 0(t2)               # load single float value
 
-    flt.s t5, ft0, fs11
-    beqz t5, do_exp_scalar
+    flt.s t5, ft0, fs11          # check if ft0 < threshold (-10.0)
+    beqz t5, do_exp_scalar       # if not, proceed to compute exp
 
-    fcvt.s.w fa0, zero
-    j store_exp_scalar
+    fcvt.s.w fa0, zero           # if too small, set exp ≈ 0.0
+    j store_exp_scalar           # skip exp call
 
 do_exp_scalar:
-    fmv.s fa0, ft0
-    jal ra, exp_approx
+    fmv.s fa0, ft0               # move ft0 to argument register
+    jal ra, exp_approx           # call exp_approx to compute exp(ft0)
 
 store_exp_scalar:
-    slli t1, s4, 2
-    add t2, s3, t1
-    fsw fa0, 0(t2)
+    slli t1, s4, 2               # compute output offset
+    add t2, s3, t1               # get address in output array
+    fsw fa0, 0(t2)               # store computed exp value
 
-    fadd.s fs7, fs7, fa0
+    fadd.s fs7, fs7, fa0         # accumulate exp sum in fs7
 
-    addi s4, s4, 1
-    addi t0, t0, 1
-    j scalar_exp_loop
+    addi s4, s4, 1               # increment output index
+    addi t0, t0, 1               # increment scalar index
+    j scalar_exp_loop            # continue scalar loop
 
 scalar_exp_done:
-    addi sp, sp, 32
+    addi sp, sp, 32              # deallocate stack space used for temp values
 
-    add t3, t3, t4
-    j exp_loop
+    add t3, t3, t4               # move to next chunk of inputs
+    j exp_loop                   # repeat outer loop
 
 exp_done:
 
     # -------------------------
     # Step 3: Normalize (vectorized)
     # -------------------------
-    addi t3, zero, 0
+
+    addi t3, zero, 0             # reset index for normalization loop
 
 normalize_loop:
-    bge t3, s5, done_norm
+    bge t3, s5, done_norm        # if all elements processed, exit
 
     addi t4, s5, 0
-    sub t4, t4, t3
-    vsetvli t4, t4, e32, m1
+    sub t4, t4, t3               # t4 = remaining elements
+    vsetvli t4, t4, e32, m1      # set vector length accordingly
 
-    slli t5, t3, 2
-    add t5, s3, t5
-    vle32.v v0, (t5)
+    slli t5, t3, 2               # byte offset = t3 * 4
+    add t5, s3, t5               # compute address in output array
+    vle32.v v0, (t5)             # load exponentials from output buffer
 
-    vfmv.v.f v1, fs7
-    vfdiv.vv v2, v0, v1
+    vfmv.v.f v1, fs7             # broadcast sum of exponentials
+    vfdiv.vv v2, v0, v1          # normalize: softmax = exp(x) / sum(exp)
 
-    vse32.v v2, (t5)
+    vse32.v v2, (t5)             # store normalized values back
 
-    add t3, t3, t4
-    j normalize_loop
+    add t3, t3, t4               # increment processed count
+    j normalize_loop             # continue loop
+
 
 done_norm:
 
