@@ -1,8 +1,3 @@
-Thank you for the clarification. Here's the **complete and unified `README.md` file** — from title to license — in one full markdown block. You can **copy-paste this entire code into your `README.md`** file as-is:
-
----
-
-````markdown
 # Vectorized Convolutional Neural Network in RISC-V
 
 ## Overview
